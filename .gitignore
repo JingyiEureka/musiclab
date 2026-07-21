@@ -3,5 +3,6 @@ temp_uploads/
 outputs/
 _output/
 archive/
+.pytest_cache/
 /*.mp3
 .DS_Store

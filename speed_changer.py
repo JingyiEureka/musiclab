@@ -1,12 +1,53 @@
-import librosa
-import soundfile as sf
-import numpy as np
-import warnings
-import subprocess
 import os
+import subprocess
 import uuid
+import warnings
+
+import librosa
+import numpy as np
+import soundfile as sf
 
 warnings.filterwarnings("ignore")
+
+
+def stretch(audio_seg, rate, is_stereo=False):
+    """Time-stretch an audio segment with RMS volume compensation."""
+    if rate == 1.0:
+        return audio_seg
+    rms_original = np.sqrt(np.mean(audio_seg**2))
+    if is_stereo:
+        stretched = np.array(
+            [
+                librosa.effects.time_stretch(audio_seg[0], rate=rate),
+                librosa.effects.time_stretch(audio_seg[1], rate=rate),
+            ]
+        )
+    else:
+        stretched = librosa.effects.time_stretch(audio_seg, rate=rate)
+    rms_stretched = np.sqrt(np.mean(stretched**2))
+    if rms_stretched > 0:
+        stretched = stretched * (rms_original / rms_stretched)
+    return stretched
+
+
+def crossfade(a, b, sr, is_stereo=False, fade_sec=0.02):
+    """Equal-power crossfade between two audio arrays."""
+    fade_samples = int(fade_sec * sr)
+    if fade_samples <= 0:
+        return np.concatenate((a, b), axis=-1)
+    fade_samples = min(fade_samples, a.shape[-1], b.shape[-1])
+    fade_in = np.sqrt(np.linspace(0, 1, fade_samples))
+    fade_out = np.sqrt(np.linspace(1, 0, fade_samples))
+    if is_stereo:
+        a_end, b_start = a[:, -fade_samples:], b[:, :fade_samples]
+        blended = a_end * fade_out + b_start * fade_in
+        return np.concatenate(
+            (a[:, :-fade_samples], blended, b[:, fade_samples:]), axis=-1
+        )
+    else:
+        a_end, b_start = a[-fade_samples:], b[:fade_samples]
+        blended = a_end * fade_out + b_start * fade_in
+        return np.concatenate((a[:-fade_samples], blended, b[fade_samples:]), axis=-1)
 
 
 def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.0):
@@ -25,22 +66,6 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
     print(f"Loading audio: {input_path} (this may take a moment)...")
     y, sr = librosa.load(input_path, sr=None, mono=False)
     is_stereo = y.ndim > 1
-
-    def stretch(audio_seg, rate):
-        if rate == 1.0:
-            return audio_seg
-        rms_original = np.sqrt(np.mean(audio_seg ** 2))
-        if is_stereo:
-            stretched = np.array([
-                librosa.effects.time_stretch(audio_seg[0], rate=rate),
-                librosa.effects.time_stretch(audio_seg[1], rate=rate),
-            ])
-        else:
-            stretched = librosa.effects.time_stretch(audio_seg, rate=rate)
-        rms_stretched = np.sqrt(np.mean(stretched ** 2))
-        if rms_stretched > 0:
-            stretched = stretched * (rms_original / rms_stretched)
-        return stretched
 
     sample_indices = [int(t * sr) for t in timestamps]
 
@@ -66,36 +91,16 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
             f"Processing segment {i + 1} ({start_time}s - {end_time}s), "
             f"speed: {speed * 100:.1f}%"
         )
-        stretched_slices.append(stretch(audio_slice, speed))
+        stretched_slices.append(stretch(audio_slice, speed, is_stereo))
 
     if not stretched_slices:
         print("All segments removed, nothing to export.")
         return
 
-    def crossfade(a, b, fade_sec=0.02):
-        fade_samples = int(fade_sec * sr)
-        if fade_samples <= 0:
-            return np.concatenate((a, b), axis=-1)
-        fade_samples = min(fade_samples, a.shape[-1], b.shape[-1])
-        fade_in = np.sqrt(np.linspace(0, 1, fade_samples))
-        fade_out = np.sqrt(np.linspace(1, 0, fade_samples))
-        if is_stereo:
-            a_end, b_start = a[:, -fade_samples:], b[:, :fade_samples]
-            blended = a_end * fade_out + b_start * fade_in
-            return np.concatenate(
-                (a[:, :-fade_samples], blended, b[:, fade_samples:]), axis=-1
-            )
-        else:
-            a_end, b_start = a[-fade_samples:], b[:fade_samples]
-            blended = a_end * fade_out + b_start * fade_in
-            return np.concatenate(
-                (a[:-fade_samples], blended, b[fade_samples:]), axis=-1
-            )
-
     print("Crossfading and concatenating...")
     final_audio = stretched_slices[0]
     for next_slice in stretched_slices[1:]:
-        final_audio = crossfade(final_audio, next_slice, fade_sec=0.02)
+        final_audio = crossfade(final_audio, next_slice, sr, is_stereo)
 
     print("Writing output...")
     temp_wav = f"temp_output_{uuid.uuid4().hex}.wav"
@@ -105,7 +110,9 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-i", temp_wav, "-q:a", "2", output_path],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         os.remove(temp_wav)
         print(f"Done: {output_path}")
@@ -124,4 +131,6 @@ if __name__ == "__main__":
     speed_strs = [str(int(s * global_slowdown * 100)) for s in segment_speeds]
     output_file = f"{input_name}_{'_'.join(speed_strs)}.mp3"
 
-    process_audio(input_file, output_file, cut_timestamps, segment_speeds, global_slowdown)
+    process_audio(
+        input_file, output_file, cut_timestamps, segment_speeds, global_slowdown
+    )
