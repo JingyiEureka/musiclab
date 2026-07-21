@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TempoTailor Wireframe</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0c0c0c;
+    --surface: #111;
+    --surface2: #161616;
+    --fg: #e0e0e0;
+    --dim: #666666;
+    --accent: #d4a0b5;
+    --warn: #ffcc00;
+    --err: #ff6666;
+    --border: #444444;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: 'Courier New', Courier, 'Liberation Mono', Consolas, Monaco, monospace;
+    font-size: 15px;
+    font-weight: bold;
+    line-height: 1.6;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  .container {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+
+  /* ── CRT scanlines ── */
+  body::after {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 999;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px,
+      rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px
+    );
+  }
+
+  /* ── Header ── */
+  header { margin-bottom: 32px; }
+  header pre {
+    color: var(--accent);
+    font-size: 12px;
+    line-height: 1.2;
+    margin-bottom: 12px;
+  }
+  .prompt { color: var(--dim); }
+  .prompt::before { content: '> '; color: var(--accent); }
+
+  /* ── Dividers ── */
+  .divider {
+    color: var(--dim);
+    font-size: 12px;
+    margin: 24px 0 16px;
+    user-select: none;
+  }
+
+  /* ── Sections ── */
+  .section { margin-bottom: 20px; }
+  .section-title { margin-bottom: 12px; }
+  .section-title::before { content: '> '; color: var(--accent); }
+
+  /* ── Upload Zone ── */
+  .upload-zone {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+  }
+  .upload-zone:hover { border-color: var(--accent); }
+  .upload-zone .dollar { color: var(--accent); }
+  .upload-zone .hint { color: var(--dim); }
+  .file-loaded {
+    margin-top: 8px;
+    color: var(--accent);
+  }
+  .file-loaded::before { content: '[OK] '; }
+
+  /* ── Segment Rows ── */
+  .segment-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    margin-bottom: 6px;
+  }
+  .segment-row .idx { color: var(--accent); }
+  .segment-row .field { display: flex; align-items: center; gap: 6px; }
+  .segment-row .field-label { color: var(--dim); font-size: 12px; }
+
+  input {
+    background: var(--surface2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: bold;
+    width: 70px;
+    outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+
+  .btn {
+    background: var(--surface);
+    color: var(--dim);
+    border: 1px solid var(--dim);
+    padding: 4px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .btn:hover { color: var(--fg); border-color: var(--fg); }
+  .btn-danger { color: var(--dim); border-color: var(--dim); }
+  .btn-danger:hover { color: var(--err); border-color: var(--err); }
+  .btn-primary {
+    color: var(--accent);
+    border-color: var(--accent);
+    font-size: 15px;
+    padding: 10px 32px;
+    margin-top: 12px;
+  }
+  .btn-primary:hover { background: #1f1419; }
+  .btn-add {
+    color: var(--accent);
+    border-color: var(--accent);
+    margin-top: 6px;
+  }
+  .btn-add::before { content: '+ '; }
+
+  .last-tag { color: var(--dim); font-size: 12px; margin-left: 8px; }
+
+  /* ── Output ── */
+  .output-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 8px;
+  }
+  .output-row .label { color: var(--dim); }
+  .output-row .value { color: var(--fg); }
+
+  .status {
+    margin-top: 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    display: inline-block;
+  }
+  .status.ok { color: var(--accent); border-color: var(--accent); }
+  .status.ok::before { content: '[OK] '; }
+  .status.proc { color: var(--warn); border-color: var(--warn); }
+  .status.proc::before { content: '[*] '; }
+  .status.fail { color: var(--err); border-color: var(--err); }
+  .status.fail::before { content: '[FAIL] '; }
+
+  /* ── Cursor blink ── */
+  .cursor::after {
+    content: '_';
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <pre>
+ _______                    _______        _ _
+|__   __|                  |__   __|      | |
+   | | ___  _ __ ___  ___    | | ___  ___| | |
+   | |/ _ \| '__/ _ \/ _ \   | |/ _ \/ _ \ | |
+   | | (_) | | |  __/  __/   | |  __/  __/ | |
+   |_|\___/|_|  \___|\___|   |_|\___|\___|_|_|
+    </pre>
+    <div class="prompt cursor">Music Speed Changer</div>
+  </header>
+
+  <!-- Upload -->
+  <div class="divider">────────────────────────────────────────────────────────────────</div>
+  <div class="section">
+    <div class="upload-zone">
+      <span class="dollar">$</span> <span class="hint">Drop audio file here or click to select</span>
+    </div>
+    <div class="file-loaded">kitri.mp3 (3:42)</div>
+  </div>
+
+  <!-- Segments -->
+  <div class="divider">────────────────────────────────────────────────────────────────</div>
+  <div class="section">
+    <div class="section-title">Segments</div>
+
+    <div class="segment-row">
+      <span class="idx">[1]</span>
+      <span class="field"><span class="field-label">end:</span> <input type="number" value="25.8"></span>
+      <span class="field"><span class="field-label">speed:</span> <input type="number" value="1.00" step="0.01"></span>
+      <button class="btn btn-danger">X</button>
+    </div>
+
+    <div class="segment-row">
+      <span class="idx">[2]</span>
+      <span class="field"><span class="field-label">end:</span> <input type="number" value="46.0"></span>
+      <span class="field"><span class="field-label">speed:</span> <input type="number" value="0.91" step="0.01"></span>
+      <button class="btn btn-danger">X</button>
+    </div>
+
+    <div class="segment-row">
+      <span class="idx">[3]</span>
+      <span class="field"><span class="field-label">end:</span> <input value="end" disabled style="opacity:0.5"></span>
+      <span class="field"><span class="field-label">speed:</span> <input type="number" value="0.84" step="0.01"></span>
+      <span class="last-tag">(last)</span>
+    </div>
+
+    <button class="btn btn-add">Add segment</button>
+  </div>
+
+  <!-- Output -->
+  <div class="divider">────────────────────────────────────────────────────────────────</div>
+  <div class="section">
+    <div class="section-title">Output</div>
+
+    <div class="output-row">
+      <span class="label">Global factor:</span>
+      <input type="number" value="1.00" step="0.01" min="0.5" max="1.5">
+    </div>
+    <div class="output-row">
+      <span class="label">Estimated duration:</span>
+      <span class="value">2:35</span>
+    </div>
+
+    <button class="btn btn-primary">[ Run &amp; Export MP3 ]</button>
+
+    <div class="status ok">Done! Download ready.</div>
+  </div>
+
+</div>
+</body>
+</html>
