@@ -2,14 +2,25 @@
 const CONFIG = {
     API_BASE_URL: 'http://127.0.0.1:8000',
     POLLING_INTERVAL_MS: 2000,
+    WAVEFORM_COLOR_PLAYED: '#d4a0b5',
+    WAVEFORM_COLOR_UNPLAYED: '#666666',
 };
 
 // ── Audio State ─────────────────────────────────────────────────
 let audioFile = null;
+let audioBuffer = null;
 let totalDuration = 0;
 
+// ── Player State ─────────────────────────────────────────────────
+let audioCtx = null;
+let sourceNode = null;
+let isPlaying = false;
+let playStartTime = 0;
+let playOffset = 0;
+let animFrameId = null;
+
 // ── Segments State ─────────────────────────────────────────────
-let segments = []; // Each: { endTime: number|null, speed: number }
+let segments = [];
 
 // ── Helpers ─────────────────────────────────────────────────────
 function formatTime(s) {
@@ -37,15 +48,127 @@ function updatePredictedDuration() {
     if (el) el.textContent = formatTime(getFinalTotalDuration());
 }
 
+function getCurrentTime() {
+    if (isPlaying) return audioCtx.currentTime - playStartTime;
+    return playOffset;
+}
+
+// ── Waveform ────────────────────────────────────────────────────
+function drawWaveform() {
+    const canvas = document.getElementById('waveform-canvas');
+    const wrap = document.getElementById('waveform-wrap');
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = wrap.offsetWidth * dpr;
+    canvas.height = wrap.offsetHeight * dpr;
+    canvas.style.width = wrap.offsetWidth + 'px';
+    canvas.style.height = wrap.offsetHeight + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const W = wrap.offsetWidth;
+    const H = wrap.offsetHeight;
+
+    const data = audioBuffer.getChannelData(0);
+    const step = Math.ceil(data.length / W);
+    const mid = H / 2;
+    const playheadX = (getCurrentTime() / totalDuration) * W;
+
+    ctx.clearRect(0, 0, W, H);
+
+    for (let x = 0; x < W; x++) {
+        let min = 1, max = -1;
+        for (let j = 0; j < step; j++) {
+            const d = data[x * step + j] || 0;
+            if (d < min) min = d;
+            if (d > max) max = d;
+        }
+        const barH = Math.max(1, (max - min) * mid * 0.9);
+        ctx.fillStyle = x <= playheadX
+            ? CONFIG.WAVEFORM_COLOR_PLAYED
+            : CONFIG.WAVEFORM_COLOR_UNPLAYED;
+        ctx.fillRect(x, mid - barH, 1, barH * 2);
+    }
+}
+
+function updatePlayheadUI() {
+    const t = getCurrentTime();
+    const pct = (t / totalDuration) * 100;
+    document.getElementById('playhead').style.left = pct + '%';
+    document.getElementById('player-current').textContent = formatTime(t);
+    document.getElementById('player-total').textContent = formatTime(totalDuration);
+    drawWaveform();
+}
+
+// ── Player ──────────────────────────────────────────────────────
+function togglePlay() {
+    if (!audioBuffer) return;
+    if (isPlaying) {
+        pause();
+    } else {
+        play();
+    }
+}
+
+function play() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(audioCtx.destination);
+    sourceNode.start(0, playOffset);
+    sourceNode.onended = () => {
+        if (isPlaying) {
+            playOffset = 0;
+            isPlaying = false;
+            cancelAnimationFrame(animFrameId);
+            updatePlayUI();
+            updatePlayheadUI();
+        }
+    };
+    playStartTime = audioCtx.currentTime - playOffset;
+    isPlaying = true;
+    updatePlayUI();
+    animate();
+}
+
+function pause() {
+    playOffset = audioCtx.currentTime - playStartTime;
+    if (sourceNode) { sourceNode.stop(); sourceNode = null; }
+    isPlaying = false;
+    cancelAnimationFrame(animFrameId);
+    updatePlayUI();
+    updatePlayheadUI();
+}
+
+function updatePlayUI() {
+    document.getElementById('play-btn').textContent = isPlaying ? '||' : '>';
+}
+
+function animate() {
+    updatePlayheadUI();
+    if (isPlaying) animFrameId = requestAnimationFrame(animate);
+}
+
+function seekTo(e) {
+    const wrap = document.getElementById('waveform-wrap');
+    const rect = wrap.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    playOffset = pct * totalDuration;
+    if (isPlaying) {
+        if (sourceNode) { sourceNode.onended = null; sourceNode.stop(); sourceNode = null; }
+        play();
+    } else {
+        updatePlayheadUI();
+    }
+}
+
 // ── Segments ────────────────────────────────────────────────────
 function renderSegments() {
     const container = document.getElementById('segments-container');
     container.innerHTML = '';
 
     segments.forEach((seg, i) => {
-        const startSec = i === 0 ? 0 : (segments[i - 1].endTime || 0);
         const isLast = i === segments.length - 1;
-
         const row = document.createElement('div');
         row.className = 'segment-row';
         row.dataset.index = i;
@@ -66,9 +189,7 @@ function renderSegments() {
         `;
         if (!isLast) {
             const btn = row.querySelector('.btn-remove');
-            btn.addEventListener('click', function() {
-                removeSegment(i);
-            });
+            btn.addEventListener('click', function() { removeSegment(i); });
         }
         container.appendChild(row);
     });
@@ -137,16 +258,23 @@ function updateSegmentSpeed(i, val) {
 // ── File Handling ────────────────────────────────────────────────
 async function handleFile(file) {
     audioFile = file;
-    document.getElementById('file-name-text').textContent = file.name;
-    document.getElementById('file-name-display').style.display = 'block';
-
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = await ctx.decodeAudioData(await file.arrayBuffer());
-    totalDuration = buf.duration;
+    audioCtx = ctx;
+    audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
+    totalDuration = audioBuffer.duration;
+    playOffset = 0;
+    isPlaying = false;
+    updatePlayUI();
 
+    document.getElementById('upload-zone').style.display = 'none';
+    document.getElementById('player-section').style.display = 'block';
+    document.getElementById('player-filename').textContent = '— ' + file.name;
+    document.getElementById('player-total').textContent = formatTime(totalDuration);
+
+    drawWaveform();
+    updatePlayheadUI();
     segments = [];
     renderSegments();
-    updatePredictedDuration();
 }
 
 // ── Export ──────────────────────────────────────────────────────
@@ -233,6 +361,7 @@ function checkTaskProgress(taskId) {
 document.addEventListener('DOMContentLoaded', () => {
     segments = [];
     renderSegments();
+    document.getElementById('player-section').style.display = 'none';
 
     // Upload zone
     const zone = document.getElementById('upload-zone');
@@ -245,6 +374,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.getElementById('audio-file-input').addEventListener('change', e => {
         if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+
+    // Player
+    document.getElementById('play-btn').addEventListener('click', togglePlay);
+    document.getElementById('waveform-wrap').addEventListener('click', seekTo);
+    document.addEventListener('keydown', e => {
+        if (e.code === 'Space' && document.activeElement === document.body) {
+            e.preventDefault();
+            togglePlay();
+        }
     });
 
     // Add segment
