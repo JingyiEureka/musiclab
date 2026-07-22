@@ -204,10 +204,6 @@ input:disabled {
     width: 70px;
 }
 
-#global-factor-input {
-    width: 70px;
-}
-
 /* ── Buttons ── */
 .btn {
     background: var(--surface);

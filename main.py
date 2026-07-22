@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import uuid
+from datetime import datetime
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -174,6 +176,8 @@ async def download_audio(task_id: str):
 
     # 从数据库获取原文件名，如果没有就兜底叫 processed
     original_name = TASKS_DB.get(task_id, {}).get("original_filename", "processed")
-    download_name = f"{original_name}_变速版.mp3"
+    safe_name = re.sub(r"[^a-z0-9_]+", "_", original_name.lower()).strip("_")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    download_name = f"{safe_name}_{ts}.mp3"
 
     return FileResponse(file_path, media_type="audio/mpeg", filename=download_name)

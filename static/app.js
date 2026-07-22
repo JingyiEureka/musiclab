@@ -19,22 +19,17 @@ function formatTime(s) {
     return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
-function getGlobalSpeed() {
-    return parseFloat(document.getElementById('global-factor-input')?.value) || 1.0;
-}
-
 // ── Duration Prediction ─────────────────────────────────────────
 function getFinalTotalDuration() {
     if (!totalDuration) return 0;
-    const gs = getGlobalSpeed();
-    if (segments.length === 0) return totalDuration / gs;
+    if (segments.length === 0) return totalDuration;
     let finalDur = 0, prevOrig = 0;
     segments.forEach(seg => {
         const origEnd = seg.endTime !== null ? seg.endTime : totalDuration;
         finalDur += (origEnd - prevOrig) / seg.speed;
         prevOrig = origEnd;
     });
-    return finalDur / gs;
+    return finalDur;
 }
 
 function updatePredictedDuration() {
@@ -67,8 +62,14 @@ function renderSegments() {
             </span>
             ${isLast
                 ? '<span class="seg-last">(last)</span>'
-                : '<button class="btn-remove" data-action="remove" data-index="' + i + '">X</button>'}
+                : '<button class="btn-remove">X</button>'}
         `;
+        if (!isLast) {
+            const btn = row.querySelector('.btn-remove');
+            btn.addEventListener('click', function() {
+                removeSegment(i);
+            });
+        }
         container.appendChild(row);
     });
 
@@ -87,14 +88,16 @@ function addSegment() {
             { endTime: null, speed: 1.0 },
         ];
     } else {
-        const lastEnd = segments[segments.length - 2]?.endTime || 0;
+        const lastSeg = segments[segments.length - 1];
+        const prevSeg = segments.length >= 2 ? segments[segments.length - 2] : { endTime: 0 };
+        const lastEnd = prevSeg.endTime || 0;
         const mid = parseFloat(((lastEnd + totalDuration) / 2).toFixed(1));
         if (mid <= lastEnd + 0.5 || mid >= totalDuration - 0.5) {
             alert('Not enough room for another segment.');
             return;
         }
-        segments[segments.length - 1].endTime = mid;
-        segments.push({ endTime: null, speed: segments[segments.length - 2].speed });
+        lastSeg.endTime = mid;
+        segments.push({ endTime: null, speed: lastSeg.speed });
     }
     renderSegments();
 }
@@ -131,14 +134,6 @@ function updateSegmentSpeed(i, val) {
     updatePredictedDuration();
 }
 
-function updateGlobalFactor(val) {
-    let num = parseFloat(val);
-    if (isNaN(num)) num = 1.0;
-    num = Math.max(0.5, Math.min(1.5, num));
-    document.getElementById('global-factor-input').value = num.toFixed(2);
-    updatePredictedDuration();
-}
-
 // ── File Handling ────────────────────────────────────────────────
 async function handleFile(file) {
     audioFile = file;
@@ -158,7 +153,7 @@ async function handleFile(file) {
 async function runAndExport() {
     const timestamps = segments.length > 0 ? segments.slice(0, -1).map(s => s.endTime ?? 0) : [];
     const speeds = segments.length > 0 ? segments.map(s => s.speed) : [1.0];
-    const globalSpeed = getGlobalSpeed();
+    const globalSpeed = 1.0;
 
     const btn = document.getElementById('export-btn');
     const banner = document.getElementById('status-banner');
@@ -258,17 +253,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Export
     document.getElementById('export-btn').addEventListener('click', runAndExport);
 
-    // Global factor
-    document.getElementById('global-factor-input').addEventListener('change', e => {
-        updateGlobalFactor(e.target.value);
-    });
-
     // Segment events (delegation)
     const segContainer = document.getElementById('segments-container');
-    segContainer.addEventListener('click', e => {
-        const rem = e.target.closest('[data-action="remove"]');
-        if (rem) removeSegment(parseInt(rem.dataset.index));
-    });
     segContainer.addEventListener('change', e => {
         if (e.target.classList.contains('seg-end')) {
             updateSegmentEnd(parseInt(e.target.dataset.index), e.target.value);
