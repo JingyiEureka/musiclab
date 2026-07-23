@@ -247,6 +247,18 @@ header pre {
     font-size: 12px;
 }
 
+.seg-range {
+    color: var(--fg);
+    font-size: 13px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.seg-end-static {
+    color: var(--dim);
+    font-size: 13px;
+}
+
 .seg-last {
     color: var(--dim);
     font-size: 12px;
@@ -301,6 +313,18 @@ input:disabled {
 
 #btn-add-segment:hover {
     background: #1f1419;
+}
+
+.seg-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.seg-notification {
+    display: none;
+    color: var(--dim);
+    font-size: 12px;
 }
 
 .btn-remove {

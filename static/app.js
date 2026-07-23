@@ -28,10 +28,20 @@ function formatTime(s) {
     s = Math.max(0, s);
     const m = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
+    const dec = Math.floor((s % 1) * 10);
+    return `${m}:${sec.toString().padStart(2, '0')}.${dec}`;
 }
 
 // ── Duration Prediction ─────────────────────────────────────────
+function showNotification(msg) {
+    const el = document.getElementById('seg-notification');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = 'inline';
+    clearTimeout(el._hideTimer);
+    el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, 2500);
+}
+
 function getFinalTotalDuration() {
     if (!totalDuration) return 0;
     if (segments.length === 0) return totalDuration;
@@ -68,6 +78,7 @@ function drawWaveform() {
     canvas.style.width = waveW + 'px';
     canvas.style.height = H + 'px';
     const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
 
     const data = audioBuffer.getChannelData(0);
@@ -153,8 +164,8 @@ function play() {
 }
 
 function pause() {
-    playOffset = audioCtx.currentTime - playStartTime;
-    if (sourceNode) { sourceNode.stop(); sourceNode = null; }
+    playOffset = Math.min(audioCtx.currentTime - playStartTime, totalDuration);
+    if (sourceNode) { sourceNode.onended = null; sourceNode.stop(); sourceNode = null; }
     isPlaying = false;
     cancelAnimationFrame(animFrameId);
     updatePlayUI();
@@ -191,6 +202,7 @@ function renderSegments() {
     const container = document.getElementById('segments-container');
     container.innerHTML = '';
 
+    let prevEnd = 0;
     segments.forEach((seg, i) => {
         const isLast = i === segments.length - 1;
         const row = document.createElement('div');
@@ -198,10 +210,13 @@ function renderSegments() {
         row.dataset.index = i;
         row.innerHTML = `
             <span class="seg-idx">[${i + 1}]</span>
-            <span class="seg-field"><label>end:</label>
-                <input type="number" class="seg-end" data-index="${i}"
-                    value="${seg.endTime ?? ''}" placeholder="end" step="0.1"
-                    ${isLast ? 'disabled' : ''} />
+            <span class="seg-range">${prevEnd.toFixed(1)} -></span>
+            <span class="seg-field">
+                ${isLast
+                    ? `<span class="seg-end-static">${totalDuration.toFixed(1)}</span>`
+                    : `<input type="number" class="seg-end" data-index="${i}"
+                        value="${seg.endTime ?? ''}" placeholder="end" step="0.1" />`
+                }
             </span>
             <span class="seg-field"><label>speed:</label>
                 <input type="number" class="seg-speed" data-index="${i}"
@@ -216,6 +231,7 @@ function renderSegments() {
             btn.addEventListener('click', function() { removeSegment(i); });
         }
         container.appendChild(row);
+        prevEnd = seg.endTime ?? totalDuration;
     });
 
     updatePredictedDuration();
@@ -223,26 +239,29 @@ function renderSegments() {
 
 function addSegment() {
     if (!totalDuration) {
-        alert('Upload an audio file first.');
+        showNotification('Upload an audio file first.');
         return;
     }
+    const t = parseFloat(Math.max(0, Math.min(totalDuration, getCurrentTime())).toFixed(1));
     if (segments.length === 0) {
-        const mid = parseFloat((totalDuration / 2).toFixed(1));
+        if (t <= 0.5 || t >= totalDuration - 0.5) {
+            showNotification('Click on the waveform to pick a time for the new section.');
+            return;
+        }
         segments = [
-            { endTime: mid, speed: 1.0 },
+            { endTime: t, speed: 1.0 },
             { endTime: null, speed: 1.0 },
         ];
     } else {
         const lastSeg = segments[segments.length - 1];
         const prevSeg = segments.length >= 2 ? segments[segments.length - 2] : { endTime: 0 };
-        const lastEnd = prevSeg.endTime || 0;
-        const mid = parseFloat(((lastEnd + totalDuration) / 2).toFixed(1));
-        if (mid <= lastEnd + 0.5 || mid >= totalDuration - 0.5) {
-            alert('Not enough room for another segment.');
+        const prevEnd = prevSeg.endTime || 0;
+        if (t <= prevEnd + 0.5 || t >= totalDuration - 0.5) {
+            showNotification('Pick a time between sections to add a new one.');
             return;
         }
-        lastSeg.endTime = mid;
-        segments.push({ endTime: null, speed: lastSeg.speed });
+        lastSeg.endTime = t;
+        segments.push({ endTime: null, speed: 1.0 });
     }
     renderSegments();
 }
@@ -266,16 +285,31 @@ function removeSegment(i) {
 function updateSegmentEnd(i, val) {
     const num = parseFloat(val);
     if (isNaN(num) || num <= 0) return;
-    segments[i].endTime = parseFloat(num.toFixed(1));
-    updatePredictedDuration();
+    const minEnd = i === 0 ? 0 : (segments[i - 1].endTime ?? totalDuration);
+    const maxEnd = i >= segments.length - 1 ? totalDuration : (segments[i + 1].endTime ?? totalDuration);
+    const clamped = Math.max(minEnd, Math.min(maxEnd, num));
+    const rounded = parseFloat(clamped.toFixed(1));
+    segments[i].endTime = rounded;
+    const input = document.querySelector(`.seg-end[data-index="${i}"]`);
+    if (input) input.value = rounded;
+    renderSegments();
 }
 
 function updateSegmentSpeed(i, val) {
     let num = parseFloat(val);
+    if (isNaN(num)) return;
+    segments[i].speed = Math.max(0.5, Math.min(2.0, num));
+    updatePredictedDuration();
+}
+
+function commitSegmentSpeed(i) {
+    const input = document.querySelector(`.seg-speed[data-index="${i}"]`);
+    if (!input) return;
+    let num = parseFloat(input.value);
     if (isNaN(num)) num = 1.0;
     num = Math.max(0.5, Math.min(2.0, num));
     segments[i].speed = num;
-    document.querySelector(`.seg-speed[data-index="${i}"]`).value = num.toFixed(2);
+    input.value = num.toFixed(2);
     updatePredictedDuration();
 }
 
@@ -433,6 +467,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.classList.contains('seg-end')) {
             updateSegmentEnd(parseInt(e.target.dataset.index, 10), e.target.value);
         }
+        if (e.target.classList.contains('seg-speed')) {
+            commitSegmentSpeed(parseInt(e.target.dataset.index, 10));
+        }
+    });
+    segContainer.addEventListener('input', e => {
         if (e.target.classList.contains('seg-speed')) {
             updateSegmentSpeed(parseInt(e.target.dataset.index, 10), e.target.value);
         }
