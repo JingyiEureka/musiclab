@@ -4,6 +4,7 @@ const CONFIG = {
     POLLING_INTERVAL_MS: 2000,
     WAVEFORM_COLOR_PLAYED: '#d4a0b5',
     WAVEFORM_COLOR_UNPLAYED: '#666666',
+    WAVEFORM_PX_PER_SEC: 13,
 };
 
 // ── Audio State ─────────────────────────────────────────────────
@@ -57,27 +58,35 @@ function getCurrentTime() {
 function drawWaveform() {
     const canvas = document.getElementById('waveform-canvas');
     const wrap = document.getElementById('waveform-wrap');
+    const inner = document.getElementById('waveform-inner');
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = wrap.offsetWidth * dpr;
-    canvas.height = wrap.offsetHeight * dpr;
-    canvas.style.width = wrap.offsetWidth + 'px';
-    canvas.style.height = wrap.offsetHeight + 'px';
+    const viewW = wrap.clientWidth;
+    const waveW = Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC));
+    const H = inner.clientHeight;
+    canvas.width = waveW * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = waveW + 'px';
+    canvas.style.height = H + 'px';
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
-    const W = wrap.offsetWidth;
-    const H = wrap.offsetHeight;
 
     const data = audioBuffer.getChannelData(0);
-    const step = Math.ceil(data.length / W);
     const mid = H / 2;
-    const playheadX = (getCurrentTime() / totalDuration) * W;
+    const playheadX = totalDuration > 0
+        ? (getCurrentTime() / totalDuration) * waveW
+        : 0;
 
-    ctx.clearRect(0, 0, W, H);
+    ctx.clearRect(0, 0, waveW, H);
 
-    for (let x = 0; x < W; x++) {
+    const MAX_BARS = 15000;
+    const barStep = waveW > MAX_BARS ? Math.ceil(waveW / MAX_BARS) : 1;
+    const sampleStep = Math.ceil(data.length / waveW);
+
+    for (let x = 0; x < waveW; x += barStep) {
         let min = 1, max = -1;
-        for (let j = 0; j < step; j++) {
-            const d = data[x * step + j] || 0;
+        const end = Math.min(data.length, (x + 1) * sampleStep);
+        for (let j = x * sampleStep; j < end; j++) {
+            const d = data[j] || 0;
             if (d < min) min = d;
             if (d > max) max = d;
         }
@@ -85,16 +94,28 @@ function drawWaveform() {
         ctx.fillStyle = x <= playheadX
             ? CONFIG.WAVEFORM_COLOR_PLAYED
             : CONFIG.WAVEFORM_COLOR_UNPLAYED;
-        ctx.fillRect(x, mid - barH, 1, barH * 2);
+        ctx.fillRect(x, mid - barH, barStep, barH * 2);
     }
 }
 
 function updatePlayheadUI() {
     const t = getCurrentTime();
-    const pct = (t / totalDuration) * 100;
-    document.getElementById('playhead').style.left = pct + '%';
-    document.getElementById('player-current').textContent = formatTime(t);
+    const wrap = document.getElementById('waveform-wrap');
+    const inner = document.getElementById('waveform-inner');
+    const viewW = wrap.clientWidth;
+    const waveW = Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC));
+    const playheadX = totalDuration > 0 ? (t / totalDuration) * waveW : 0;
+
+    document.getElementById('playhead').style.left = playheadX + 'px';
+    const timeLabel = document.getElementById('player-current');
+    timeLabel.textContent = formatTime(t);
+    timeLabel.style.left = (playheadX - inner.scrollLeft) + 'px';
     document.getElementById('player-total').textContent = formatTime(totalDuration);
+
+    const viewEnd = inner.scrollLeft + viewW;
+    if (playheadX > viewEnd - 40) inner.scrollLeft = playheadX - viewW + 40;
+    if (playheadX < inner.scrollLeft) inner.scrollLeft = playheadX;
+
     drawWaveform();
 }
 
@@ -151,8 +172,11 @@ function animate() {
 
 function seekTo(e) {
     const wrap = document.getElementById('waveform-wrap');
+    const inner = document.getElementById('waveform-inner');
     const rect = wrap.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const viewW = wrap.clientWidth;
+    const waveW = Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC));
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left + inner.scrollLeft) / waveW));
     playOffset = pct * totalDuration;
     if (isPlaying) {
         if (sourceNode) { sourceNode.onended = null; sourceNode.stop(); sourceNode = null; }
@@ -257,24 +281,35 @@ function updateSegmentSpeed(i, val) {
 
 // ── File Handling ────────────────────────────────────────────────
 async function handleFile(file) {
-    audioFile = file;
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    audioCtx = ctx;
-    audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
-    totalDuration = audioBuffer.duration;
-    playOffset = 0;
-    isPlaying = false;
-    updatePlayUI();
+    try {
+        audioFile = file;
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
+        if (audioCtx) audioCtx.close();
+        audioCtx = ctx;
+        totalDuration = audioBuffer.duration;
+        playOffset = 0;
+        isPlaying = false;
+        updatePlayUI();
 
-    document.getElementById('upload-zone').style.display = 'none';
-    document.getElementById('player-section').style.display = 'block';
-    document.getElementById('player-filename').textContent = '— ' + file.name;
-    document.getElementById('player-total').textContent = formatTime(totalDuration);
+        document.getElementById('upload-zone').style.display = 'none';
+        document.getElementById('player-section').style.display = 'block';
+        document.getElementById('player-filename').textContent = '— ' + file.name;
+        document.getElementById('player-total').textContent = formatTime(totalDuration);
 
-    drawWaveform();
-    updatePlayheadUI();
-    segments = [];
-    renderSegments();
+        drawWaveform();
+        updatePlayheadUI();
+        segments = [];
+        renderSegments();
+    } catch (e) {
+        const zone = document.getElementById('upload-zone');
+        if (zone) zone.style.display = 'block';
+        const section = document.getElementById('player-section');
+        if (section) section.style.display = 'none';
+        audioFile = null;
+        audioBuffer = null;
+        alert('Failed to load audio file: ' + e.message);
+    }
 }
 
 // ── Export ──────────────────────────────────────────────────────
@@ -396,10 +431,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const segContainer = document.getElementById('segments-container');
     segContainer.addEventListener('change', e => {
         if (e.target.classList.contains('seg-end')) {
-            updateSegmentEnd(parseInt(e.target.dataset.index), e.target.value);
+            updateSegmentEnd(parseInt(e.target.dataset.index, 10), e.target.value);
         }
         if (e.target.classList.contains('seg-speed')) {
-            updateSegmentSpeed(parseInt(e.target.dataset.index), e.target.value);
+            updateSegmentSpeed(parseInt(e.target.dataset.index, 10), e.target.value);
         }
     });
 });

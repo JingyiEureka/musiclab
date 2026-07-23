@@ -24,19 +24,33 @@
             <div class="prompt cursor">Ready</div>
         </header>
 
-        <!-- Upload -->
-        <div class="divider">────────────────────────────────────────────────────────────────</div>
+        <!-- Upload / Player -->
+        <div class="divider"></div>
         <div class="section">
-            <div class="section-title">Audio File</div>
+            <div class="section-title">Audio <span class="player-label" id="player-filename"></span></div>
             <div class="upload-zone" id="upload-zone">
                 <input type="file" id="audio-file-input" accept="audio/*" />
                 <span class="dollar">$</span> <span class="hint">Drop audio file here or click to select</span>
-                <div id="file-name-display"><span id="file-name-text"></span></div>
+            </div>
+            <div id="player-section">
+                <div class="player-row">
+                    <div class="waveform-wrap" id="waveform-wrap">
+                        <span class="waveform-time" id="player-total">0:00</span>
+                        <span class="playhead-time" id="player-current">0:00</span>
+                        <div id="waveform-inner">
+                            <div class="playhead-line" id="playhead"></div>
+                            <canvas id="waveform-canvas"></canvas>
+                        </div>
+                    </div>
+                    <div class="player-bar-row">
+                        <button class="player-btn" id="play-btn">></button>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- Segments -->
-        <div class="divider">────────────────────────────────────────────────────────────────</div>
+        <div class="divider"></div>
         <div class="section">
             <div class="section-title">Segments</div>
             <div id="segments-container"></div>
@@ -44,7 +58,7 @@
         </div>
 
         <!-- Output -->
-        <div class="divider">────────────────────────────────────────────────────────────────</div>
+        <div class="divider"></div>
         <div class="section">
             <div class="section-title">Output</div>
 
