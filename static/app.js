@@ -220,7 +220,7 @@ function renderSegments() {
             </span>
             <span class="seg-field"><label>speed:</label>
                 <input type="number" class="seg-speed" data-index="${i}"
-                    value="${seg.speed.toFixed(2)}" min="0.5" max="2.0" step="0.01" />
+                    value="${seg.speed.toFixed(2)}" min="0.25" max="8.0" step="0.01" />
             </span>
             ${isLast
                 ? '<span class="seg-last">(last)</span>'
@@ -298,7 +298,12 @@ function updateSegmentEnd(i, val) {
 function updateSegmentSpeed(i, val) {
     let num = parseFloat(val);
     if (isNaN(num)) return;
-    segments[i].speed = Math.max(0.5, Math.min(2.0, num));
+    const raw = num;
+    num = Math.max(0.25, Math.min(8.0, num));
+    if (raw !== num) {
+        showNotification('Speed range: 0.25 to 8.0');
+    }
+    segments[i].speed = num;
     updatePredictedDuration();
 }
 
@@ -312,7 +317,11 @@ function commitSegmentSpeed(i) {
     }
     let num = parseFloat(trimmed);
     if (isNaN(num)) num = 1.0;
-    num = Math.max(0.5, Math.min(2.0, num));
+    const raw = num;
+    num = Math.max(0.25, Math.min(8.0, num));
+    if (raw !== num) {
+        showNotification('Speed range: 0.25 to 8.0');
+    }
     segments[i].speed = num;
     input.value = num.toFixed(2);
     updatePredictedDuration();
