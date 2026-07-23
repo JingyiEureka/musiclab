@@ -305,7 +305,12 @@ function updateSegmentSpeed(i, val) {
 function commitSegmentSpeed(i) {
     const input = document.querySelector(`.seg-speed[data-index="${i}"]`);
     if (!input) return;
-    let num = parseFloat(input.value);
+    const trimmed = input.value.trim();
+    if (trimmed === '') {
+        input.value = (segments[i]?.speed ?? 1.0).toFixed(2);
+        return;
+    }
+    let num = parseFloat(trimmed);
     if (isNaN(num)) num = 1.0;
     num = Math.max(0.5, Math.min(2.0, num));
     segments[i].speed = num;
