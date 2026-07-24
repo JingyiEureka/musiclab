@@ -83,7 +83,7 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
         start_time = 0 if i == 0 else timestamps[i - 1]
         end_time = timestamps[i] if i < len(timestamps) else "end"
 
-        if speed == 0:
+        if speed == 0 or audio_slice.shape[-1] == 0:
             print(f"Removing segment {i + 1} ({start_time}s - {end_time}s)")
             continue
 
@@ -94,8 +94,7 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
         stretched_slices.append(stretch(audio_slice, speed, is_stereo))
 
     if not stretched_slices:
-        print("All segments removed, nothing to export.")
-        return
+        raise ValueError("All segments removed, nothing to export.")
 
     print("Crossfading and concatenating...")
     final_audio = stretched_slices[0]

@@ -37,7 +37,7 @@ function showNotification(msg) {
     const el = document.getElementById('seg-notification');
     if (!el) return;
     el.textContent = msg;
-    el.style.display = 'inline';
+    el.style.display = 'block';
     clearTimeout(el._hideTimer);
     el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, 2500);
 }
@@ -48,7 +48,7 @@ function getFinalTotalDuration() {
     let finalDur = 0, prevOrig = 0;
     segments.forEach(seg => {
         const origEnd = seg.endTime !== null ? seg.endTime : totalDuration;
-        finalDur += (origEnd - prevOrig) / seg.speed;
+        if (seg.speed > 0) finalDur += (origEnd - prevOrig) / seg.speed;
         prevOrig = origEnd;
     });
     return finalDur;
@@ -173,7 +173,7 @@ function pause() {
 }
 
 function updatePlayUI() {
-    document.getElementById('play-btn').textContent = isPlaying ? '||' : '>';
+    document.getElementById('play-btn').textContent = isPlaying ? 'Pause' : 'Play';
 }
 
 function animate() {
@@ -199,39 +199,71 @@ function seekTo(e) {
 }
 
 // ── Segments ────────────────────────────────────────────────────
+function isMuted(seg) {
+    return seg.speed === 0;
+}
+
+function clampSpeed(mult) {
+    return mult === 0 ? 0 : Math.max(0.25, Math.min(8.0, mult));
+}
+
 function renderSegments() {
     const container = document.getElementById('segments-container');
     container.innerHTML = '';
 
+    if (segments.length > 0) {
+        const header = document.createElement('div');
+        header.className = 'seg-header';
+        header.innerHTML = `
+            <span class="seg-idx"></span>
+            <span class="seg-start">start</span>
+            <span class="seg-field">end</span>
+            <span class="seg-field">speed (%)</span>
+        `;
+        container.appendChild(header);
+    }
+
     let prevEnd = 0;
     segments.forEach((seg, i) => {
         const isLast = i === segments.length - 1;
+        const muted = isMuted(seg);
+        const displayStart = i === 0 ? 0 : prevEnd + 0.1;
         const row = document.createElement('div');
-        row.className = 'segment-row';
+        row.className = 'segment-row' + (muted ? ' muted' : '');
         row.dataset.index = i;
         row.innerHTML = `
             <span class="seg-idx">[${i + 1}]</span>
-            <span class="seg-range">${prevEnd.toFixed(1)} -></span>
+            <span class="seg-start">${displayStart.toFixed(1)}</span>
             <span class="seg-field">
                 ${isLast
                     ? `<span class="seg-end-static">${totalDuration.toFixed(1)}</span>`
-                    : `<input type="number" class="seg-end" data-index="${i}"
-                        value="${seg.endTime ?? ''}" placeholder="end" step="0.1" />`
+                    : `<button class="stepper" data-kind="end" data-step="-0.1" data-index="${i}"
+                        ${muted ? 'disabled' : ''}>&lt;</button>
+                       <input type="number" class="seg-end" data-index="${i}"
+                        value="${seg.endTime !== null ? seg.endTime.toFixed(1) : ''}" placeholder="end" step="0.1"
+                        ${muted ? 'disabled' : ''} />
+                       <button class="stepper" data-kind="end" data-step="0.1" data-index="${i}"
+                        ${muted ? 'disabled' : ''}>&gt;</button>`
                 }
             </span>
-            <span class="seg-field"><label>speed:</label>
+            <span class="seg-field">
+                <button class="stepper" data-kind="speed" data-step="-5" data-index="${i}">&lt;</button>
                 <input type="number" class="seg-speed" data-index="${i}"
-                    value="${seg.speed.toFixed(2)}" min="0.25" max="8.0" step="0.01" />
+                    value="${muted ? '0' : (seg.speed * 100).toFixed(0)}"
+                    min="0" max="800" step="1" />
+                <button class="stepper" data-kind="speed" data-step="5" data-index="${i}">&gt;</button>
             </span>
-            ${isLast
-                ? '<span class="seg-last">(last)</span>'
-                : '<button class="btn-remove">X</button>'}
         `;
-        if (!isLast) {
-            const btn = row.querySelector('.btn-remove');
-            btn.addEventListener('click', function() { removeSegment(i); });
-        }
         container.appendChild(row);
+
+        if (!isLast && !muted && !isMuted(segments[i + 1])) {
+            const divider = document.createElement('div');
+            divider.className = 'seg-merge-divider';
+            divider.innerHTML = `<button class="btn-merge" data-index="${i}"
+                title="Merge these two sections (remove split)">merge</button>`;
+            container.appendChild(divider);
+        }
+
         prevEnd = seg.endTime ?? totalDuration;
     });
 
@@ -243,70 +275,52 @@ function addSegment() {
         showNotification('Upload an audio file first.');
         return;
     }
-    const t = parseFloat(Math.max(0, Math.min(totalDuration, getCurrentTime())).toFixed(1));
     if (segments.length === 0) {
-        if (t <= 0.5 || t >= totalDuration - 0.5) {
-            showNotification('Click on the waveform to pick a time for the new section.');
-            return;
-        }
-        segments = [
-            { endTime: t, speed: 1.0 },
-            { endTime: null, speed: 1.0 },
-        ];
-    } else {
-        const lastSeg = segments[segments.length - 1];
-        const prevSeg = segments.length >= 2 ? segments[segments.length - 2] : { endTime: 0 };
-        const prevEnd = prevSeg.endTime || 0;
-        if (t <= prevEnd + 0.5 || t >= totalDuration - 0.5) {
-            showNotification('Pick a time between sections to add a new one.');
-            return;
-        }
-        lastSeg.endTime = t;
-        segments.push({ endTime: null, speed: 1.0 });
+        segments = [{ endTime: null, speed: 1.0 }];
     }
-    renderSegments();
+    const t = parseFloat(Math.max(0, Math.min(totalDuration, getCurrentTime())).toFixed(1));
+    let prevEnd = 0;
+    for (let j = 0; j < segments.length; j++) {
+        const end = segments[j].endTime ?? totalDuration;
+        if (t < end) {
+            if (t <= prevEnd + 0.5 || t >= end - 0.5) {
+                showNotification('Split must be at least 0.5s from existing boundaries.');
+                return;
+            }
+            segments.splice(j, 0, { endTime: t, speed: segments[j].speed });
+            renderSegments();
+            return;
+        }
+        prevEnd = end;
+    }
+    showNotification('Split must be at least 0.5s from existing boundaries.');
 }
 
-function removeSegment(i) {
-    if (segments.length <= 1) return;
-    if (i === segments.length - 1) {
-        segments[i - 1].endTime = null;
-        segments.pop();
-    } else {
-        segments.splice(i, 1);
-        for (let j = i; j < segments.length - 1; j++) {
-            if (segments[j].endTime === null) {
-                segments[j].endTime = segments[j - 1]?.endTime || totalDuration;
-            }
-        }
-    }
+function mergeWithNext(i) {
+    if (i >= segments.length - 1) return;
+    segments[i].endTime = segments[i + 1].endTime;
+    segments.splice(i + 1, 1);
     renderSegments();
 }
 
 function updateSegmentEnd(i, val) {
     const num = parseFloat(val);
     if (isNaN(num) || num <= 0) return;
-    const minEnd = i === 0 ? 0 : (segments[i - 1].endTime ?? totalDuration);
-    const maxEnd = i >= segments.length - 1 ? totalDuration : (segments[i + 1].endTime ?? totalDuration);
+    const prevBound = i === 0 ? 0 : (segments[i - 1].endTime ?? totalDuration);
+    const nextBound = i >= segments.length - 1 ? totalDuration : (segments[i + 1].endTime ?? totalDuration);
+    const minEnd = prevBound + 0.5;
+    const maxEnd = nextBound - 0.5;
+    if (minEnd > maxEnd) return;
     const clamped = Math.max(minEnd, Math.min(maxEnd, num));
     const rounded = parseFloat(clamped.toFixed(1));
     segments[i].endTime = rounded;
-    const input = document.querySelector(`.seg-end[data-index="${i}"]`);
-    if (input) input.value = rounded;
     renderSegments();
 }
 
 function updateSegmentSpeed(i, val) {
-    let num = parseFloat(val);
+    const num = parseFloat(val);
     if (isNaN(num)) return;
-    const raw = num;
-    num = Math.max(0.25, Math.min(8.0, num));
-    if (raw !== num) {
-        showNotification('Speed range: 0.25 to 8.0');
-    }
-    segments[i].speed = num;
-    const input = document.querySelector(`.seg-speed[data-index="${i}"]`);
-    if (input) input.value = num.toFixed(2);
+    segments[i].speed = clampSpeed(num / 100);
     updatePredictedDuration();
 }
 
@@ -315,19 +329,25 @@ function commitSegmentSpeed(i) {
     if (!input) return;
     const trimmed = input.value.trim();
     if (trimmed === '') {
-        input.value = (segments[i]?.speed ?? 1.0).toFixed(2);
+        input.value = ((segments[i]?.speed ?? 1.0) * 100).toFixed(0);
         return;
     }
     let num = parseFloat(trimmed);
-    if (isNaN(num)) num = 1.0;
-    const raw = num;
-    num = Math.max(0.25, Math.min(8.0, num));
-    if (raw !== num) {
-        showNotification('Speed range: 0.25 to 8.0');
+    if (isNaN(num)) num = 100;
+    const row = input.closest('.segment-row');
+    const wasMuted = row !== null && row.classList.contains('muted');
+    const raw = num / 100;
+    const speed = clampSpeed(raw);
+    if (speed !== raw) {
+        showNotification('Speed range: 25% to 800%');
     }
-    segments[i].speed = num;
-    input.value = num.toFixed(2);
-    updatePredictedDuration();
+    segments[i].speed = speed;
+    if (isMuted(segments[i]) !== wasMuted) {
+        renderSegments();
+    } else {
+        input.value = speed === 0 ? '0' : (speed * 100).toFixed(0);
+        updatePredictedDuration();
+    }
 }
 
 // ── Export ──────────────────────────────────────────────────────
@@ -346,10 +366,16 @@ async function runAndExport() {
         alert('Upload an audio file first.');
         return;
     }
+    if (segments.length > 0 && segments.every(isMuted)) {
+        btn.disabled = false;
+        showNotification('All sections are removed - nothing to export.');
+        return;
+    }
 
+    clearTimeout(bannerHideTimer);
     banner.style.display = 'block';
-    banner.className = 'status proc';
-    statusText.textContent = '[*] Uploading & Processing...';
+    banner.className = 'proc';
+    statusText.textContent = 'processing...';
 
     try {
         const fd = new FormData();
@@ -362,16 +388,17 @@ async function runAndExport() {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
 
-        statusText.textContent = `[*] Processing... task: ${data.task_id}`;
         checkTaskProgress(data.task_id);
     } catch (e) {
-        banner.className = 'status fail';
+        banner.className = 'fail';
         statusText.textContent = e.message.includes('fetch') || e.message.includes('Failed')
-            ? '[FAIL] Cannot connect to server. Run: uvicorn main:app --port 8000'
-            : `[FAIL] ${e.message}`;
+            ? 'error: cannot connect to server (run: uvicorn main:app --port 8000)'
+            : `error: ${e.message}`;
         btn.disabled = false;
     }
 }
+
+let bannerHideTimer = null;
 
 function checkTaskProgress(taskId) {
     const btn = document.getElementById('export-btn');
@@ -384,27 +411,29 @@ function checkTaskProgress(taskId) {
             const data = await res.json();
 
             if (data.status === 'processing') {
-                statusText.textContent = `[*] Processing... task: ${taskId}`;
+                statusText.textContent = 'processing...';
             } else if (data.status === 'done') {
                 clearInterval(interval);
                 const fileUrl = CONFIG.API_BASE_URL + data.file_url;
-                banner.className = 'status ok';
-                statusText.innerHTML = `[OK] <a href="${fileUrl}">Download MP3</a>`;
+                banner.className = 'ok';
+                statusText.innerHTML = `done &mdash; <a href="${fileUrl}">download mp3</a>`;
                 const a = document.createElement('a');
                 a.href = fileUrl;
-                a.download = `tempotailor_${taskId}.mp3`;
+                a.download = `musiclab_${taskId}.mp3`;
                 a.click();
                 btn.disabled = false;
+                clearTimeout(bannerHideTimer);
+                bannerHideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
             } else if (data.status === 'failed') {
                 clearInterval(interval);
-                banner.className = 'status fail';
-                statusText.textContent = '[FAIL] Processing error. Check server logs.';
+                banner.className = 'fail';
+                statusText.textContent = 'error: processing failed, check server logs';
                 btn.disabled = false;
             }
         } catch (err) {
             clearInterval(interval);
-            banner.className = 'status fail';
-            statusText.textContent = '[FAIL] ' + err.message;
+            banner.className = 'fail';
+            statusText.textContent = 'error: ' + err.message;
             btn.disabled = false;
         }
     }, CONFIG.POLLING_INTERVAL_MS);
@@ -414,7 +443,6 @@ function checkTaskProgress(taskId) {
 document.addEventListener('DOMContentLoaded', () => {
     segments = [];
     renderSegments();
-    document.getElementById('player-section').style.display = 'none';
 
     // Upload zone
     const zone = document.getElementById('upload-zone');
@@ -464,51 +492,42 @@ document.addEventListener('DOMContentLoaded', () => {
             updateSegmentSpeed(parseInt(e.target.dataset.index, 10), e.target.value);
         }
     });
+    segContainer.addEventListener('click', e => {
+        const merge = e.target.closest('.btn-merge');
+        if (merge) {
+            mergeWithNext(parseInt(merge.dataset.index, 10));
+            return;
+        }
+        const btn = e.target.closest('.stepper');
+        if (!btn || btn.disabled) return;
+        const i = parseInt(btn.dataset.index, 10);
+        const input = btn.parentElement.querySelector('input');
+        if (!input) return;
+        const step = parseFloat(btn.dataset.step);
+        const cur = parseFloat(input.value);
+        if (btn.dataset.kind === 'speed') {
+            const base = isNaN(cur) ? (segments[i].speed * 100) : cur;
+            if (base === 0 && step < 0) return;
+            input.value = Math.round(base + step);
+            commitSegmentSpeed(i);
+        } else {
+            const base = isNaN(cur) ? (segments[i].endTime ?? totalDuration) : cur;
+            updateSegmentEnd(i, (base + step).toFixed(1));
+        }
+    });
 
-    // Rotating tips with typewriter effect
+    // Header greeting with typewriter effect
     const tipEl = document.getElementById('tip-text');
     const typeSpeed = 150;
-    const pauseBetween = 3000;
-    const tips = [
-        'Hello!',
-        'Tip: Press Space to play/pause',
-        'Press Enter to split at current position',
-    ];
-    let tipIndex = 1;
-    let tipsStarted = false;
-    let _pendingTimers = [];
 
-    function typeWriter(text, i, callback) {
+    function typeWriter(text, i) {
         if (i < text.length) {
             tipEl.textContent = text.slice(0, i + 1);
-            const id = setTimeout(() => typeWriter(text, i + 1, callback), typeSpeed);
-            if (!tipsStarted) _pendingTimers.push(id);
-        } else {
-            const id = setTimeout(callback, pauseBetween);
-            if (!tipsStarted) _pendingTimers.push(id);
+            setTimeout(() => typeWriter(text, i + 1), typeSpeed);
         }
     }
 
-    function rotateTip() {
-        if (!tipsStarted) return;
-        const text = tips[tipIndex];
-        tipEl.textContent = '';
-        typeWriter(text, 0, () => {
-            tipIndex = tipIndex + 1;
-            if (tipIndex >= tips.length) tipIndex = 1;
-            rotateTip();
-        });
-    }
-
-    function startTips() {
-        if (tipsStarted) return;
-        tipsStarted = true;
-        _pendingTimers.forEach(clearTimeout);
-        _pendingTimers = [];
-        rotateTip();
-    }
-
-    typeWriter('Hello!', 0, () => {});
+    typeWriter('Welcome to MusicLab!', 0);
 
     // ── File Handling ────────────────────────────────────────────────
     async function handleFile(file) {
@@ -527,20 +546,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
             document.getElementById('upload-zone').style.display = 'none';
             document.getElementById('player-section').style.display = 'block';
+            document.getElementById('sections-block').style.display = 'block';
+            document.getElementById('output-block').style.display = 'block';
             document.getElementById('player-filename').textContent = '— ' + file.name;
             document.getElementById('player-total').textContent = formatTime(totalDuration);
 
             drawWaveform();
             updatePlayheadUI();
-            segments = [];
+            segments = [{ endTime: null, speed: 1.0 }];
             renderSegments();
-            startTips();
         } catch (e) {
             if (ctx) ctx.close();
             const zone = document.getElementById('upload-zone');
             if (zone) zone.style.display = 'block';
             const section = document.getElementById('player-section');
             if (section) section.style.display = 'none';
+            document.getElementById('sections-block').style.display = 'none';
+            document.getElementById('output-block').style.display = 'none';
             audioFile = null;
             audioBuffer = null;
             totalDuration = 0;

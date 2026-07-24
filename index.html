@@ -4,9 +4,9 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TempoTailor: Music Speed Changer</title>
+    <title>MusicLab &mdash; music editing made easy</title>
     <meta name="description"
-        content="TempoTailor lets you adjust the playback speed of audio segments independently and export the result as an MP3." />
+        content="MusicLab lets you adjust the playback speed of audio sections independently and export the result as an MP3." />
     <link rel="stylesheet" href="/static/styles.css" />
 </head>
 
@@ -16,11 +16,11 @@
         <!-- Header -->
         <header>
             <pre>
-╔══════════════════════════════════╗
-║     T E M P O T A I L O R       ║
-║     Music Speed Changer         ║
-╚══════════════════════════════════╝
+█▀▄▀█ █ █ █▀▀ █ █▀▀   █   █▀█ █▀▄
+█ ▀ █ █ █ ▀▀█ █ █     █   █▀█ █▀▄
+█   █ █▄█ ▄▄█ █ █▄▄   █▄▄ █ █ █▄▀
             </pre>
+            <div class="tagline">music editing made easy</div>
             <div class="prompt cursor"><span id="tip-text"></span></div>
         </header>
 
@@ -30,7 +30,7 @@
             <div class="section-title">Audio <span class="player-label" id="player-filename"></span></div>
             <div class="upload-zone" id="upload-zone">
                 <input type="file" id="audio-file-input" accept="audio/*" />
-                <span class="dollar">$</span> <span class="hint">Drop audio file here or click to select</span>
+                <span class="hint">Drop or select audio</span>
             </div>
             <div id="player-section">
                 <div class="player-row">
@@ -43,36 +43,42 @@
                         </div>
                     </div>
                     <div class="player-bar-row">
-                        <button class="player-btn" id="play-btn">></button>
+                        <button class="player-btn" id="play-btn">Play</button>
+                    </div>
+                    <div class="player-bar-row">
+                        <button class="player-btn" id="btn-add-segment" title="Split at current position (Enter)">Split</button>
                     </div>
                 </div>
+                <div class="tip"># tip: use `space` key to play/pause<br /># use `enter` to split the music</div>
             </div>
         </div>
 
         <!-- Segments -->
-        <div class="divider"></div>
-        <div class="section">
-            <div class="section-title">Sections</div>
-            <div id="segments-container"></div>
-            <div class="seg-actions">
-                <button class="btn" id="btn-add-segment" title="Split at current position (Enter)">Split</button>
-                <span id="seg-notification" class="seg-notification"></span>
+        <div id="sections-block">
+            <div class="divider"></div>
+            <div class="section">
+                <div class="section-title">Sections</div>
+                <div id="segments-container"></div>
+                <div class="tip"># set speed to 0 to remove a section</div>
+                <div id="seg-notification" class="seg-notification"></div>
             </div>
         </div>
 
         <!-- Output -->
-        <div class="divider"></div>
-        <div class="section">
-            <div class="section-title">Output</div>
+        <div id="output-block">
+            <div class="divider"></div>
+            <div class="section">
+                <div class="section-title">Output</div>
 
-            <div class="output-row">
-                <span class="output-label">Estimated duration:</span>
-                <span id="predicted-duration-text">--:--</span>
+                <div class="output-row">
+                    <span class="output-label">Estimated duration:</span>
+                    <span id="predicted-duration-text">--:--</span>
+                </div>
+
+                <button class="btn btn-export" id="export-btn">[ Export ]</button>
+
+                <div id="status-banner"><span id="status-text"></span></div>
             </div>
-
-            <button class="btn btn-export" id="export-btn">[ Run &amp; Export MP3 ]</button>
-
-            <div id="status-banner"><span id="status-text"></span></div>
         </div>
 
     </div>
