@@ -190,6 +190,7 @@ function seekTo(e) {
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left + inner.scrollLeft) / waveW));
     playOffset = pct * totalDuration;
     if (isPlaying) {
+        cancelAnimationFrame(animFrameId);
         if (sourceNode) { sourceNode.onended = null; sourceNode.stop(); sourceNode = null; }
         play();
     } else {
@@ -304,6 +305,8 @@ function updateSegmentSpeed(i, val) {
         showNotification('Speed range: 0.25 to 8.0');
     }
     segments[i].speed = num;
+    const input = document.querySelector(`.seg-speed[data-index="${i}"]`);
+    if (input) input.value = num.toFixed(2);
     updatePredictedDuration();
 }
 
@@ -325,39 +328,6 @@ function commitSegmentSpeed(i) {
     segments[i].speed = num;
     input.value = num.toFixed(2);
     updatePredictedDuration();
-}
-
-// ── File Handling ────────────────────────────────────────────────
-async function handleFile(file) {
-    try {
-        audioFile = file;
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
-        if (audioCtx) audioCtx.close();
-        audioCtx = ctx;
-        totalDuration = audioBuffer.duration;
-        playOffset = 0;
-        isPlaying = false;
-        updatePlayUI();
-
-        document.getElementById('upload-zone').style.display = 'none';
-        document.getElementById('player-section').style.display = 'block';
-        document.getElementById('player-filename').textContent = '— ' + file.name;
-        document.getElementById('player-total').textContent = formatTime(totalDuration);
-
-        drawWaveform();
-        updatePlayheadUI();
-        segments = [];
-        renderSegments();
-    } catch (e) {
-        const zone = document.getElementById('upload-zone');
-        if (zone) zone.style.display = 'block';
-        const section = document.getElementById('player-section');
-        if (section) section.style.display = 'none';
-        audioFile = null;
-        audioBuffer = null;
-        alert('Failed to load audio file: ' + e.message);
-    }
 }
 
 // ── Export ──────────────────────────────────────────────────────
@@ -467,6 +437,10 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             togglePlay();
         }
+        if ((e.code === 'Enter' || e.code === 'NumpadEnter') && document.activeElement === document.body) {
+            e.preventDefault();
+            addSegment();
+        }
     });
 
     // Add segment
@@ -490,4 +464,87 @@ document.addEventListener('DOMContentLoaded', () => {
             updateSegmentSpeed(parseInt(e.target.dataset.index, 10), e.target.value);
         }
     });
+
+    // Rotating tips with typewriter effect
+    const tipEl = document.getElementById('tip-text');
+    const typeSpeed = 150;
+    const pauseBetween = 3000;
+    const tips = [
+        'Hello!',
+        'Tip: Press Space to play/pause',
+        'Press Enter to split at current position',
+    ];
+    let tipIndex = 1;
+    let tipsStarted = false;
+    let _pendingTimers = [];
+
+    function typeWriter(text, i, callback) {
+        if (i < text.length) {
+            tipEl.textContent = text.slice(0, i + 1);
+            const id = setTimeout(() => typeWriter(text, i + 1, callback), typeSpeed);
+            if (!tipsStarted) _pendingTimers.push(id);
+        } else {
+            const id = setTimeout(callback, pauseBetween);
+            if (!tipsStarted) _pendingTimers.push(id);
+        }
+    }
+
+    function rotateTip() {
+        if (!tipsStarted) return;
+        const text = tips[tipIndex];
+        tipEl.textContent = '';
+        typeWriter(text, 0, () => {
+            tipIndex = tipIndex + 1;
+            if (tipIndex >= tips.length) tipIndex = 1;
+            rotateTip();
+        });
+    }
+
+    function startTips() {
+        if (tipsStarted) return;
+        tipsStarted = true;
+        _pendingTimers.forEach(clearTimeout);
+        _pendingTimers = [];
+        rotateTip();
+    }
+
+    typeWriter('Hello!', 0, () => {});
+
+    // ── File Handling ────────────────────────────────────────────────
+    async function handleFile(file) {
+        let ctx;
+        try {
+            audioFile = file;
+            ctx = new (window.AudioContext || window.webkitAudioContext)();
+            audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
+            if (audioCtx) audioCtx.close();
+            sourceNode = null;
+            audioCtx = ctx;
+            totalDuration = audioBuffer.duration;
+            playOffset = 0;
+            isPlaying = false;
+            updatePlayUI();
+
+            document.getElementById('upload-zone').style.display = 'none';
+            document.getElementById('player-section').style.display = 'block';
+            document.getElementById('player-filename').textContent = '— ' + file.name;
+            document.getElementById('player-total').textContent = formatTime(totalDuration);
+
+            drawWaveform();
+            updatePlayheadUI();
+            segments = [];
+            renderSegments();
+            startTips();
+        } catch (e) {
+            if (ctx) ctx.close();
+            const zone = document.getElementById('upload-zone');
+            if (zone) zone.style.display = 'block';
+            const section = document.getElementById('player-section');
+            if (section) section.style.display = 'none';
+            audioFile = null;
+            audioBuffer = null;
+            totalDuration = 0;
+            alert('Failed to load audio file: ' + e.message);
+        }
+    }
 });
