@@ -40,8 +40,24 @@ docker run -p 8000:8000 kakakakakaka/music_lab:latest
 
 Open `http://127.0.0.1:8000`.
 
+## Deploy to production
+
+When `static/app.js` or `static/styles.css` change, bump the `?v=` query string on their tags in `index.html` so browsers drop their cached copies.
+
+The production server is linux/amd64. On an Apple Silicon Mac a plain `docker build` produces an arm64 image that crashes there with `exec format error`, so always build with buildx:
+
+```
+docker buildx build --platform linux/amd64 -t kakakakakaka/music_lab:latest --push .
+```
+
+Then on the server:
+
+```
+docker compose pull && docker compose up -d
+```
+
 ## Dev
 
 ```
-conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest test_speed_changer.py -v
+conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest test_speed_changer.py test_api.py -v
 ```
