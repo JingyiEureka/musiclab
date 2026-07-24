@@ -4,3 +4,4 @@ python-multipart==0.0.22
 librosa==0.10.2.post1
 numpy==2.0.2
 soundfile==0.12.1
+httpx==0.28.1

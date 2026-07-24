@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import subprocess
@@ -6,13 +7,25 @@ import time
 import uuid
 from datetime import datetime
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from speed_changer import process_audio
+from speed_changer import AudioDecodeError, process_audio
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="音频变速处理 API")
 
@@ -33,9 +46,11 @@ if os.path.exists("static"):
 
 
 @app.get("/")
-async def serve_index():
+async def serve_index(request: Request):
     if os.path.exists("index.html"):
-        return FileResponse("index.html")
+        response = FileResponse("index.html")
+        get_session(request, response)
+        return response
     return {"message": "index.html not found"}
 
 
@@ -48,10 +63,53 @@ os.makedirs("outputs", exist_ok=True)
 TASKS_DB = {}
 
 CLEANUP_MAX_AGE_SECONDS = 60 * 60
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_ACTIVE_TASKS = 3
+SESSION_COOKIE = "session"
+
+
+def get_session(request: Request, response: Response) -> str:
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        sid = uuid.uuid4().hex
+        response.set_cookie(SESSION_COOKIE, sid, httponly=True, samesite="lax")
+    return sid
+
+
+def get_owned_task(task_id: str, request: Request) -> dict:
+    task = TASKS_DB.get(task_id)
+    if not task or task["session"] != request.cookies.get(SESSION_COOKIE):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+# Starlette parses the whole multipart body before the handler runs, so
+# save_upload alone cannot stop an oversized request; reject by header first.
+@app.middleware("http")
+async def reject_oversized_requests(request: Request, call_next):
+    length = request.headers.get("content-length")
+    if length and length.isdigit() and int(length) > MAX_UPLOAD_BYTES + 1024 * 1024:
+        return JSONResponse(
+            status_code=413, content={"detail": "File too large (max 50 MB)"}
+        )
+    return await call_next(request)
+
+
+async def save_upload(file: UploadFile, path: str):
+    size = 0
+    with open(path, "wb") as buffer:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                break
+            buffer.write(chunk)
+    if size > MAX_UPLOAD_BYTES:
+        os.remove(path)
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
 
 
 def cleanup_stale_files():
-    """Delete outputs, uploads, and temp wavs older than CLEANUP_MAX_AGE_SECONDS."""
+    """Delete files and task records older than CLEANUP_MAX_AGE_SECONDS."""
     cutoff = time.time() - CLEANUP_MAX_AGE_SECONDS
     candidates = [
         os.path.join(folder, name)
@@ -66,7 +124,12 @@ def cleanup_stale_files():
     for path in candidates:
         if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
             os.remove(path)
-            print(f"Cleanup: deleted stale file {path}")
+            logger.info("Cleanup: deleted stale file %s", path)
+    # Prune old task records so wedged tasks free their cap slot and memory
+    for task_id in list(TASKS_DB):
+        if TASKS_DB[task_id].get("created", 0) < cutoff:
+            del TASKS_DB[task_id]
+            logger.info("Cleanup: removed stale task %s", task_id)
 
 
 cleanup_stale_files()
@@ -83,19 +146,31 @@ def background_audio_task(
 ):
     TASKS_DB[task_id]["status"] = "processing"
     try:
-        print(
-            f"Background task started: timestamps={timestamps}, speeds={speeds}, overall={overall_factor}"
+        logger.info(
+            "Background task started: timestamps=%s, speeds=%s, overall=%s",
+            timestamps,
+            speeds,
+            overall_factor,
         )
         process_audio(input_path, output_path, timestamps, speeds, overall_factor)
 
         # 处理成功，更新状态
         TASKS_DB[task_id]["status"] = "done"
         TASKS_DB[task_id]["file_url"] = f"/download/{task_id}"
-        print(f"Task {task_id} processed: {output_path}")
+        logger.info("Task %s processed: %s", task_id, output_path)
 
     except Exception as e:
+        logger.exception("Task %s failed", task_id)
+        if isinstance(e, AudioDecodeError):
+            code = "decode_failed"
+        elif isinstance(e, subprocess.CalledProcessError):
+            code = "encode_failed"
+        elif isinstance(e, ValueError):
+            code = "invalid_params"
+        else:
+            code = "server_error"
         TASKS_DB[task_id]["status"] = "failed"
-        print(f"❌ 任务 {task_id} 失败: {str(e)}")
+        TASKS_DB[task_id]["error"] = code
     finally:
         # 清理用户上传的原始文件，节省空间
         if os.path.exists(input_path):
@@ -107,12 +182,25 @@ def background_audio_task(
 # ==========================================
 @app.post("/upload-audio/")
 async def upload_audio(
+    request: Request,
+    response: Response,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     timestamps_str: str = Form(..., description="JSON格式的时间点，如 '[25.8, 46]'"),
     speeds_str: str = Form(..., description="JSON格式的速度，如 '[1, 0.96, 0.91]'"),
     overall_factor: float = Form(1.0, description="全局速度系数"),
 ):
+    active = sum(
+        1 for t in TASKS_DB.values() if t["status"] in ("pending", "processing")
+    )
+    if active >= MAX_ACTIVE_TASKS:
+        logger.warning("Rejected upload: %d tasks already active", active)
+        raise HTTPException(
+            status_code=429, detail="Server is busy - please try again in a minute."
+        )
+
+    sid = get_session(request, response)
+
     # 解析 JSON 字符串为 Python 列表
     try:
         # 清除用户在 Swagger UI 测试时可能手滑多加的外层单引号或双引号
@@ -136,10 +224,10 @@ async def upload_audio(
         if not isinstance(timestamps, list) or not isinstance(speeds, list):
             raise ValueError("解析后不是列表")
 
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=400,
-            detail=f"参数格式错误！你输入的 timestamps_str 是: {timestamps_str}，speeds_str 是: {speeds_str}。报错原因: {str(e)}。建议输入 JSON 数组，如 [25.8, 46]",
+            detail="Invalid timestamps/speeds format. Send JSON arrays like [25.8, 46].",
         )
     # 简单校验一下你核心算法需要的数据关系
     if len(speeds) != len(timestamps) + 1:
@@ -158,14 +246,16 @@ async def upload_audio(
     output_path = f"outputs/{task_id}.mp3"
 
     # 3. 把前端传来的文件保存到硬盘
-    with open(input_path, "wb") as buffer:
-        buffer.write(await file.read())
+    await save_upload(file, input_path)
 
     # 4. 在"数据库"中注册这个任务
     TASKS_DB[task_id] = {
         "status": "pending",
         "file_url": None,
+        "error": None,
         "original_filename": input_filename,
+        "session": sid,
+        "created": time.time(),
     }
 
     # 5. 把真正的处理工作扔给后台，立刻放行
@@ -194,8 +284,7 @@ async def extract_audio(file: UploadFile = File(...)):
     input_path = f"temp_uploads/{temp_id}.{input_ext}"
     output_path = f"temp_uploads/{temp_id}.mp3"
 
-    with open(input_path, "wb") as buffer:
-        buffer.write(await file.read())
+    await save_upload(file, input_path)
 
     try:
         subprocess.run(
@@ -210,7 +299,7 @@ async def extract_audio(file: UploadFile = File(...)):
         if os.path.exists(input_path):
             os.remove(input_path)
 
-    print(f"Extracted audio track: {output_path}")
+    logger.info("Extracted audio track: %s", output_path)
     return FileResponse(
         output_path,
         media_type="audio/mpeg",
@@ -222,23 +311,28 @@ async def extract_audio(file: UploadFile = File(...)):
 # 接口 2：前端每隔 2 秒来问一次“处理完了吗？”的 API
 # ==========================================
 @app.get("/check-status/{task_id}")
-async def check_status(task_id: str):
-    if task_id not in TASKS_DB:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return TASKS_DB[task_id]
+async def check_status(task_id: str, request: Request):
+    task = get_owned_task(task_id, request)
+    return {
+        "status": task["status"],
+        "file_url": task["file_url"],
+        "error": task["error"],
+    }
 
 
 # ==========================================
 # 接口 3：前端用来下载最终 MP3 的 API
 # ==========================================
 @app.get("/download/{task_id}")
-async def download_audio(task_id: str):
+async def download_audio(task_id: str, request: Request):
+    task = get_owned_task(task_id, request)
+
     file_path = f"outputs/{task_id}.mp3"
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="文件尚未生成或已丢失")
 
     # 从数据库获取原文件名，如果没有就兜底叫 processed
-    original_name = TASKS_DB.get(task_id, {}).get("original_filename", "processed")
+    original_name = task.get("original_filename", "processed")
     safe_name = re.sub(r"[^a-z0-9_]+", "_", original_name.lower()).strip("_")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     download_name = f"{safe_name}_{ts}.mp3"

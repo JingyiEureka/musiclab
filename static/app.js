@@ -2,9 +2,17 @@
 const CONFIG = {
     API_BASE_URL: window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : '',
     POLLING_INTERVAL_MS: 2000,
+    MAX_UPLOAD_BYTES: 50 * 1024 * 1024,
     WAVEFORM_COLOR_PLAYED: '#d4a0b5',
     WAVEFORM_COLOR_UNPLAYED: '#666666',
     WAVEFORM_PX_PER_SEC: 13,
+};
+
+const ERROR_MESSAGES = {
+    decode_failed: 'This file format is not supported - try a different file or convert it to MP3/WAV.',
+    encode_failed: 'Could not create the MP3 - please try again.',
+    invalid_params: 'Section settings are invalid - check your split points and speeds.',
+    server_error: 'Something went wrong on the server - please try again.',
 };
 
 // ── Audio State ─────────────────────────────────────────────────
@@ -22,6 +30,26 @@ let animFrameId = null;
 
 // ── Segments State ─────────────────────────────────────────────
 let segments = [];
+
+// ── Busy State ──────────────────────────────────────────────────
+let isBusy = false;
+
+function setBusy(busy) {
+    isBusy = busy;
+    document.getElementById('export-btn').disabled = busy;
+    document.getElementById('audio-file-input').disabled = busy;
+    document.getElementById('upload-zone').classList.toggle('disabled', busy);
+}
+
+function showUploadError(msg) {
+    const el = document.getElementById('upload-error');
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+function hideUploadError() {
+    document.getElementById('upload-error').style.display = 'none';
+}
 
 // ── Helpers ─────────────────────────────────────────────────────
 function formatTime(s) {
@@ -48,7 +76,7 @@ function getFinalTotalDuration() {
     let finalDur = 0, prevOrig = 0;
     segments.forEach(seg => {
         const origEnd = seg.endTime !== null ? seg.endTime : totalDuration;
-        if (seg.speed > 0) finalDur += (origEnd - prevOrig) / seg.speed;
+        if (!seg.skip) finalDur += (origEnd - prevOrig) / seg.speed;
         prevOrig = origEnd;
     });
     return finalDur;
@@ -173,7 +201,7 @@ function pause() {
 }
 
 function updatePlayUI() {
-    document.getElementById('play-btn').textContent = isPlaying ? 'Pause' : 'Play';
+    document.getElementById('play-btn').textContent = isPlaying ? '[ Pause ]' : '[ Play ]';
 }
 
 function animate() {
@@ -199,12 +227,8 @@ function seekTo(e) {
 }
 
 // ── Segments ────────────────────────────────────────────────────
-function isMuted(seg) {
-    return seg.speed === 0;
-}
-
 function clampSpeed(mult) {
-    return mult === 0 ? 0 : Math.max(0.25, Math.min(8.0, mult));
+    return Math.max(0.25, Math.min(8.0, mult));
 }
 
 function renderSegments() {
@@ -219,6 +243,7 @@ function renderSegments() {
             <span class="seg-start">start</span>
             <span class="seg-field">end</span>
             <span class="seg-field">speed (%)</span>
+            <span class="seg-field seg-skip-col">skip</span>
         `;
         container.appendChild(header);
     }
@@ -226,10 +251,10 @@ function renderSegments() {
     let prevEnd = 0;
     segments.forEach((seg, i) => {
         const isLast = i === segments.length - 1;
-        const muted = isMuted(seg);
+        const skipped = seg.skip;
         const displayStart = i === 0 ? 0 : prevEnd + 0.1;
         const row = document.createElement('div');
-        row.className = 'segment-row' + (muted ? ' muted' : '');
+        row.className = 'segment-row' + (skipped ? ' skipped' : '');
         row.dataset.index = i;
         row.innerHTML = `
             <span class="seg-idx">[${i + 1}]</span>
@@ -238,25 +263,33 @@ function renderSegments() {
                 ${isLast
                     ? `<span class="seg-end-static">${totalDuration.toFixed(1)}</span>`
                     : `<button class="stepper" data-kind="end" data-step="-0.1" data-index="${i}"
-                        ${muted ? 'disabled' : ''}>&lt;</button>
+                        ${skipped ? 'disabled' : ''}>&lt;</button>
                        <input type="number" class="seg-end" data-index="${i}"
                         value="${seg.endTime !== null ? seg.endTime.toFixed(1) : ''}" placeholder="end" step="0.1"
-                        ${muted ? 'disabled' : ''} />
+                        ${skipped ? 'disabled' : ''} />
                        <button class="stepper" data-kind="end" data-step="0.1" data-index="${i}"
-                        ${muted ? 'disabled' : ''}>&gt;</button>`
+                        ${skipped ? 'disabled' : ''}>&gt;</button>`
                 }
             </span>
             <span class="seg-field">
-                <button class="stepper" data-kind="speed" data-step="-5" data-index="${i}">&lt;</button>
+                <button class="stepper" data-kind="speed" data-step="-5" data-index="${i}"
+                    ${skipped ? 'disabled' : ''}>&lt;</button>
                 <input type="number" class="seg-speed" data-index="${i}"
-                    value="${muted ? '0' : (seg.speed * 100).toFixed(0)}"
-                    min="0" max="800" step="1" />
-                <button class="stepper" data-kind="speed" data-step="5" data-index="${i}">&gt;</button>
+                    value="${(seg.speed * 100).toFixed(0)}"
+                    min="25" max="800" step="1" ${skipped ? 'disabled' : ''} />
+                <button class="stepper" data-kind="speed" data-step="5" data-index="${i}"
+                    ${skipped ? 'disabled' : ''}>&gt;</button>
+            </span>
+            <span class="seg-field seg-skip-col">
+                <label class="switch" title="skipped sections are cut from the export">
+                    <input type="checkbox" class="seg-skip" data-index="${i}" ${skipped ? 'checked' : ''} />
+                    <span class="slider"></span>
+                </label>
             </span>
         `;
         container.appendChild(row);
 
-        if (!isLast && !muted && !isMuted(segments[i + 1])) {
+        if (!isLast && !skipped && !segments[i + 1].skip) {
             const divider = document.createElement('div');
             divider.className = 'seg-merge-divider';
             divider.innerHTML = `<button class="btn-merge" data-index="${i}"
@@ -276,7 +309,7 @@ function addSegment() {
         return;
     }
     if (segments.length === 0) {
-        segments = [{ endTime: null, speed: 1.0 }];
+        segments = [{ endTime: null, speed: 1.0, skip: false }];
     }
     const t = parseFloat(Math.max(0, Math.min(totalDuration, getCurrentTime())).toFixed(1));
     let prevEnd = 0;
@@ -287,7 +320,7 @@ function addSegment() {
                 showNotification('Split must be at least 0.5s from existing boundaries.');
                 return;
             }
-            segments.splice(j, 0, { endTime: t, speed: segments[j].speed });
+            segments.splice(j, 0, { endTime: t, speed: segments[j].speed, skip: segments[j].skip });
             renderSegments();
             return;
         }
@@ -334,48 +367,40 @@ function commitSegmentSpeed(i) {
     }
     let num = parseFloat(trimmed);
     if (isNaN(num)) num = 100;
-    const row = input.closest('.segment-row');
-    const wasMuted = row !== null && row.classList.contains('muted');
     const raw = num / 100;
     const speed = clampSpeed(raw);
     if (speed !== raw) {
         showNotification('Speed range: 25% to 800%');
     }
     segments[i].speed = speed;
-    if (isMuted(segments[i]) !== wasMuted) {
-        renderSegments();
-    } else {
-        input.value = speed === 0 ? '0' : (speed * 100).toFixed(0);
-        updatePredictedDuration();
-    }
+    input.value = (speed * 100).toFixed(0);
+    updatePredictedDuration();
 }
 
 // ── Export ──────────────────────────────────────────────────────
 async function runAndExport() {
     const timestamps = segments.length > 0 ? segments.slice(0, -1).map(s => s.endTime ?? 0) : [];
-    const speeds = segments.length > 0 ? segments.map(s => s.speed) : [1.0];
+    // speed 0 tells the backend to drop the section (process_audio skips speed-0 segments)
+    const speeds = segments.length > 0 ? segments.map(s => s.skip ? 0 : s.speed) : [1.0];
     const globalSpeed = 1.0;
 
-    const btn = document.getElementById('export-btn');
     const banner = document.getElementById('status-banner');
     const statusText = document.getElementById('status-text');
 
-    btn.disabled = true;
     if (!audioFile) {
-        btn.disabled = false;
         alert('Upload an audio file first.');
         return;
     }
-    if (segments.length > 0 && segments.every(isMuted)) {
-        btn.disabled = false;
-        showNotification('All sections are removed - nothing to export.');
+    if (segments.length > 0 && segments.every(s => s.skip)) {
+        showNotification('All sections are skipped - nothing to export.');
         return;
     }
+    setBusy(true);
 
     clearTimeout(bannerHideTimer);
     banner.style.display = 'block';
     banner.className = 'proc';
-    statusText.textContent = 'processing...';
+    statusText.textContent = 'uploading...';
 
     try {
         const fd = new FormData();
@@ -388,20 +413,20 @@ async function runAndExport() {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
 
+        statusText.textContent = 'processing...';
         checkTaskProgress(data.task_id);
     } catch (e) {
         banner.className = 'fail';
         statusText.textContent = e.message.includes('fetch') || e.message.includes('Failed')
             ? 'error: cannot connect to server (run: uvicorn main:app --port 8000)'
             : `error: ${e.message}`;
-        btn.disabled = false;
+        setBusy(false);
     }
 }
 
 let bannerHideTimer = null;
 
 function checkTaskProgress(taskId) {
-    const btn = document.getElementById('export-btn');
     const banner = document.getElementById('status-banner');
     const statusText = document.getElementById('status-text');
 
@@ -409,6 +434,7 @@ function checkTaskProgress(taskId) {
         try {
             const res = await fetch(`${CONFIG.API_BASE_URL}/check-status/${taskId}`);
             const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
 
             if (data.status === 'processing') {
                 statusText.textContent = 'processing...';
@@ -421,20 +447,20 @@ function checkTaskProgress(taskId) {
                 a.href = fileUrl;
                 a.download = `musiclab_${taskId}.mp3`;
                 a.click();
-                btn.disabled = false;
+                setBusy(false);
                 clearTimeout(bannerHideTimer);
                 bannerHideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
             } else if (data.status === 'failed') {
                 clearInterval(interval);
                 banner.className = 'fail';
-                statusText.textContent = 'error: processing failed, check server logs';
-                btn.disabled = false;
+                statusText.textContent = ERROR_MESSAGES[data.error] || ERROR_MESSAGES.server_error;
+                setBusy(false);
             }
         } catch (err) {
             clearInterval(interval);
             banner.className = 'fail';
             statusText.textContent = 'error: ' + err.message;
-            btn.disabled = false;
+            setBusy(false);
         }
     }, CONFIG.POLLING_INTERVAL_MS);
 }
@@ -446,11 +472,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Upload zone
     const zone = document.getElementById('upload-zone');
-    zone.addEventListener('click', () => document.getElementById('audio-file-input').click());
+    zone.addEventListener('click', () => {
+        if (isBusy) return;
+        document.getElementById('audio-file-input').click();
+    });
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', e => {
         e.preventDefault(); zone.classList.remove('drag-over');
+        if (isBusy) return;
         if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
     });
     document.getElementById('audio-file-input').addEventListener('change', e => {
@@ -486,6 +516,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.classList.contains('seg-speed')) {
             commitSegmentSpeed(parseInt(e.target.dataset.index, 10));
         }
+        if (e.target.classList.contains('seg-skip')) {
+            segments[parseInt(e.target.dataset.index, 10)].skip = e.target.checked;
+            renderSegments();
+        }
     });
     segContainer.addEventListener('input', e => {
         if (e.target.classList.contains('seg-speed')) {
@@ -507,7 +541,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const cur = parseFloat(input.value);
         if (btn.dataset.kind === 'speed') {
             const base = isNaN(cur) ? (segments[i].speed * 100) : cur;
-            if (base === 0 && step < 0) return;
             input.value = Math.round(base + step);
             commitSegmentSpeed(i);
         } else {
@@ -541,6 +574,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleFile(file) {
+        hideUploadError();
+        if (file.size > CONFIG.MAX_UPLOAD_BYTES) {
+            showUploadError('File is too large - max 50 MB.');
+            return;
+        }
+        setBusy(true);
         let ctx;
         try {
             ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -569,7 +608,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             drawWaveform();
             updatePlayheadUI();
-            segments = [{ endTime: null, speed: 1.0 }];
+            segments = [{ endTime: null, speed: 1.0, skip: false }];
             renderSegments();
         } catch (e) {
             if (ctx) ctx.close();
@@ -582,7 +621,9 @@ document.addEventListener('DOMContentLoaded', () => {
             audioFile = null;
             audioBuffer = null;
             totalDuration = 0;
-            alert('Failed to load audio file: ' + e.message);
+            showUploadError('Could not load this file - try a different one or convert it to MP3/WAV.');
+        } finally {
+            setBusy(false);
         }
     }
 });

@@ -10,6 +10,10 @@ import soundfile as sf
 warnings.filterwarnings("ignore")
 
 
+class AudioDecodeError(Exception):
+    pass
+
+
 def stretch(audio_seg, rate, is_stereo=False):
     """Time-stretch an audio segment with RMS volume compensation."""
     if rate == 1.0:
@@ -64,7 +68,12 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
     final_speeds = [s * overall_factor for s in speeds]
 
     print(f"Loading audio: {input_path} (this may take a moment)...")
-    y, sr = librosa.load(input_path, sr=None, mono=False)
+    try:
+        y, sr = librosa.load(input_path, sr=None, mono=False)
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise AudioDecodeError(str(e)) from e
     is_stereo = y.ndim > 1
 
     sample_indices = [int(t * sr) for t in timestamps]
@@ -83,6 +92,7 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
         start_time = 0 if i == 0 else timestamps[i - 1]
         end_time = timestamps[i] if i < len(timestamps) else "end"
 
+        # speed 0 marks a section the user skipped in the UI
         if speed == 0 or audio_slice.shape[-1] == 0:
             print(f"Removing segment {i + 1} ({start_time}s - {end_time}s)")
             continue
