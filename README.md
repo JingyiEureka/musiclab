@@ -26,6 +26,20 @@ uvicorn main:app --reload --port 8000
 
 Open `http://127.0.0.1:8000`, upload an audio file, add segments with timestamps and speeds, then export as MP3.
 
+## Docker
+
+```
+docker compose up
+```
+
+Or pull the prebuilt image directly:
+
+```
+docker run -p 8000:8000 kakakakakaka/music_lab:latest
+```
+
+Open `http://127.0.0.1:8000`.
+
 ## Dev
 
 ```
