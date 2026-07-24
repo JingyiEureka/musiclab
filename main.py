@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import subprocess
+import time
 import uuid
 from datetime import datetime
 
@@ -44,6 +46,30 @@ os.makedirs("outputs", exist_ok=True)
 # 模拟一个极简的数据库，用来存储任务状态
 # 格式: {"task_id": {"status": "pending" | "processing" | "done" | "failed", "file_url": "..."}}
 TASKS_DB = {}
+
+CLEANUP_MAX_AGE_SECONDS = 60 * 60
+
+
+def cleanup_stale_files():
+    """Delete outputs, uploads, and temp wavs older than CLEANUP_MAX_AGE_SECONDS."""
+    cutoff = time.time() - CLEANUP_MAX_AGE_SECONDS
+    candidates = [
+        os.path.join(folder, name)
+        for folder in ("outputs", "temp_uploads")
+        for name in os.listdir(folder)
+    ]
+    candidates += [
+        name
+        for name in os.listdir(".")
+        if name.startswith("temp_output_") and name.endswith(".wav")
+    ]
+    for path in candidates:
+        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+            os.remove(path)
+            print(f"Cleanup: deleted stale file {path}")
+
+
+cleanup_stale_files()
 
 
 # Wrapper for background task execution with status tracking
@@ -152,9 +178,44 @@ async def upload_audio(
         speeds,
         overall_factor,
     )
+    background_tasks.add_task(cleanup_stale_files)
 
     # 6. 秒回前端，告诉它拿这个 ID 去轮询进度
     return {"message": "音频已接收，正在后台处理", "task_id": task_id}
+
+
+# ==========================================
+# 接口 1b：从视频中提取音轨（iPhone Safari 无法在浏览器内解码视频）
+# ==========================================
+@app.post("/extract-audio/")
+async def extract_audio(file: UploadFile = File(...)):
+    temp_id = str(uuid.uuid4())
+    input_ext = file.filename.split(".")[-1]
+    input_path = f"temp_uploads/{temp_id}.{input_ext}"
+    output_path = f"temp_uploads/{temp_id}.mp3"
+
+    with open(input_path, "wb") as buffer:
+        buffer.write(await file.read())
+
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path, "-vn", "-q:a", "2", output_path],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        raise HTTPException(status_code=400, detail="无法从该文件提取音频")
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+    print(f"Extracted audio track: {output_path}")
+    return FileResponse(
+        output_path,
+        media_type="audio/mpeg",
+        background=BackgroundTask(os.remove, output_path),
+    )
 
 
 # ==========================================
@@ -182,13 +243,4 @@ async def download_audio(task_id: str):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     download_name = f"{safe_name}_{ts}.mp3"
 
-    def delete_after_send():
-        os.remove(file_path)
-        print(f"Task {task_id} downloaded, deleted: {file_path}")
-
-    return FileResponse(
-        file_path,
-        media_type="audio/mpeg",
-        filename=download_name,
-        background=BackgroundTask(delete_after_send),
-    )
+    return FileResponse(file_path, media_type="audio/mpeg", filename=download_name)

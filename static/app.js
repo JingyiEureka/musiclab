@@ -530,12 +530,28 @@ document.addEventListener('DOMContentLoaded', () => {
     typeWriter('Welcome to MusicLab!', 0);
 
     // ── File Handling ────────────────────────────────────────────────
+    async function extractAudioOnServer(file) {
+        const fd = new FormData();
+        fd.append('file', file);
+        const resp = await fetch(`${CONFIG.API_BASE_URL}/extract-audio/`, { method: 'POST', body: fd });
+        if (!resp.ok) throw new Error('this file could not be decoded');
+        const blob = await resp.blob();
+        const name = file.name.replace(/\.[^.]+$/, '') + '.mp3';
+        return new File([blob], name, { type: 'audio/mpeg' });
+    }
+
     async function handleFile(file) {
         let ctx;
         try {
-            audioFile = file;
             ctx = new (window.AudioContext || window.webkitAudioContext)();
-            audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
+            try {
+                audioFile = file;
+                audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
+            } catch (err) {
+                // Safari cannot decode video containers; extract the audio track server-side
+                audioFile = await extractAudioOnServer(file);
+                audioBuffer = await ctx.decodeAudioData(await audioFile.arrayBuffer());
+            }
             if (audioCtx) audioCtx.close();
             sourceNode = null;
             audioCtx = ctx;
