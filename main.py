@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from speed_changer import process_audio
 
@@ -64,6 +65,7 @@ def background_audio_task(
         # 处理成功，更新状态
         TASKS_DB[task_id]["status"] = "done"
         TASKS_DB[task_id]["file_url"] = f"/download/{task_id}"
+        print(f"Task {task_id} processed: {output_path}")
 
     except Exception as e:
         TASKS_DB[task_id]["status"] = "failed"
@@ -180,4 +182,13 @@ async def download_audio(task_id: str):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     download_name = f"{safe_name}_{ts}.mp3"
 
-    return FileResponse(file_path, media_type="audio/mpeg", filename=download_name)
+    def delete_after_send():
+        os.remove(file_path)
+        print(f"Task {task_id} downloaded, deleted: {file_path}")
+
+    return FileResponse(
+        file_path,
+        media_type="audio/mpeg",
+        filename=download_name,
+        background=BackgroundTask(delete_after_send),
+    )
