@@ -1,6 +1,6 @@
 # TempoTailor — Music Speed Changer
 
-Slice audio at arbitrary timestamps, adjust each segment's speed independently, and export as MP3.
+Slice audio (or video) at arbitrary timestamps, adjust each section's speed and volume independently, and export as MP3.
 
 ```
 ╔══════════════════════════════════╗
@@ -24,7 +24,9 @@ conda activate librosa
 uvicorn main:app --reload --port 8000
 ```
 
-Open `http://127.0.0.1:8000`, upload an audio file, add segments with timestamps and speeds, then export as MP3.
+Open `http://127.0.0.1:8000`, upload an audio or video file, split it into sections and set each section's speed and volume, then export as MP3. Optionally tick "also download a report" to get a text summary of the edit alongside the MP3.
+
+The edit is saved in the browser (IndexedDB), so a refresh or crash offers to restore your last session for a week. Nothing is stored on the server between exports.
 
 ## Docker
 

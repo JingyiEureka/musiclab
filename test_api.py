@@ -111,7 +111,8 @@ def test_busy_returns_429():
 
 
 def test_cleanup_prunes_old_tasks():
-    main.TASKS_DB["old"] = {"status": "processing", "created": time.time() - 7200}
+    old_created = time.time() - main.CLEANUP_MAX_AGE_SECONDS - 3600
+    main.TASKS_DB["old"] = {"status": "processing", "created": old_created}
     main.TASKS_DB["new"] = {"status": "processing", "created": time.time()}
     main.cleanup_stale_files()
     assert "old" not in main.TASKS_DB

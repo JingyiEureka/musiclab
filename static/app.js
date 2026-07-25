@@ -38,9 +38,235 @@ let isBusy = false;
 
 function setBusy(busy) {
     isBusy = busy;
-    document.getElementById('export-btn').disabled = busy;
+    // once the session has expired, export stays disabled regardless of busy
+    document.getElementById('export-btn').disabled = busy || sessionExpired;
     document.getElementById('audio-file-input').disabled = busy;
     document.getElementById('upload-zone').classList.toggle('disabled', busy);
+}
+
+// ── Session persistence (client-side) ───────────────────────────
+// The whole edit lives in the browser; export re-uploads the file each time,
+// so nothing of the session is on the server. We save the uploaded file and
+// the edit metadata to IndexedDB so a refresh or crash does not lose the work.
+// The session expires a week after the last edit (sliding window, so active
+// editing never expires mid-work). This is client-only and re-decodes its own
+// stored file, so it is independent of the shorter server file sweep.
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DB_NAME = 'musiclab';
+const STORE = 'session';
+const BLOB_KEY = 'blob'; // written once per file: the raw upload, re-decoded on restore
+const META_KEY = 'meta'; // written on every edit: segments, zoom, savedAt
+
+let saveTimer = null;
+let expiryTimer = null;
+let sessionSavedAt = 0;
+let sessionExpired = false;
+let pendingSession = null;
+
+function openDB() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+function idbPut(key, value) {
+    return openDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).put(value, key);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+    }));
+}
+
+function idbGet(key) {
+    return openDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        const req = tx.objectStore(STORE).get(key);
+        req.onsuccess = () => { db.close(); resolve(req.result || null); };
+        req.onerror = () => { db.close(); reject(req.error); };
+    }));
+}
+
+function idbClear() {
+    return openDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).clear();
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+    }));
+}
+
+// Store the raw upload once; safe to fire-and-forget (private mode may reject).
+function saveBlob(file) {
+    idbPut(BLOB_KEY, { blob: file, filename: file.name }).catch(() => {});
+}
+
+// Persist edit metadata, debounced so rapid edits do not hammer IndexedDB.
+// Each save resets the sliding expiry window.
+function saveMeta() {
+    if (!audioFile || sessionExpired) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+        sessionSavedAt = Date.now();
+        idbPut(META_KEY, { segments, waveformZoom, savedAt: sessionSavedAt }).catch(() => {});
+        armExpiry(sessionSavedAt);
+    }, 500);
+}
+
+// Schedule the expiry flip for when the session crosses its one-week window.
+// A backstop check in runAndExport covers the case where the device slept
+// through this timer.
+function armExpiry(savedAt) {
+    clearTimeout(expiryTimer);
+    const remaining = Math.max(0, SESSION_TTL_MS - (Date.now() - savedAt));
+    expiryTimer = setTimeout(expireSession, remaining);
+}
+
+function expireSession() {
+    clearTimeout(expiryTimer);
+    sessionExpired = true;
+    idbClear().catch(() => {});
+    if (isPlaying) pause();
+    document.getElementById('export-btn').disabled = true;
+    const banner = document.getElementById('status-banner');
+    clearTimeout(bannerHideTimer);
+    banner.style.display = 'block';
+    banner.className = 'fail';
+    document.getElementById('status-text').textContent =
+        'previous edit has expired, please refresh the page and re-upload.';
+}
+
+// On load, offer to resume a saved session unless it has expired.
+async function checkForSavedSession() {
+    let blobRec, meta;
+    try {
+        blobRec = await idbGet(BLOB_KEY);
+        meta = await idbGet(META_KEY);
+    } catch (e) {
+        return;
+    }
+    if (!blobRec || !blobRec.blob || !meta) return;
+    if (Date.now() - (meta.savedAt || 0) >= SESSION_TTL_MS) {
+        await idbClear().catch(() => {});
+        return;
+    }
+    pendingSession = { ...blobRec, ...meta };
+    document.getElementById('resume-modal-text').textContent =
+        'You have a previous edit: ' + pendingSession.filename;
+    document.getElementById('resume-modal').style.display = 'flex';
+}
+
+function hideResumeModal() {
+    document.getElementById('resume-modal').style.display = 'none';
+}
+
+async function restoreSession(saved) {
+    hideResumeModal();
+    setBusy(true);
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        audioBuffer = await ctx.decodeAudioData(await saved.blob.arrayBuffer());
+        if (audioCtx) audioCtx.close();
+        audioCtx = ctx;
+        audioFile = new File([saved.blob], saved.filename, { type: saved.blob.type });
+        totalDuration = audioBuffer.duration;
+        playOffset = 0;
+        isPlaying = false;
+        waveformZoom = saved.waveformZoom || 1;
+        segments = saved.segments || [];
+        sessionSavedAt = saved.savedAt || Date.now();
+        revealEditor(saved.filename);
+        armExpiry(sessionSavedAt);
+    } catch (e) {
+        await idbClear().catch(() => {});
+        showUploadError('Could not restore your previous session - please re-upload.');
+    } finally {
+        setBusy(false);
+    }
+}
+
+// ── Processing report ───────────────────────────────────────────
+// A human-readable summary of the current edit: file, lengths, and the
+// per-section breakdown. Downloaded alongside the export so the user has a
+// record they can match to the exported mp3.
+const MUSICLAB_LOGO = [
+    '█▀▄▀█ █ █ █▀▀ █ █▀▀   █   █▀█ █▀▄',
+    '█ ▀ █ █ █ ▀▀█ █ █     █   █▀█ █▀▄',
+    '█   █ █▄█ ▄▄█ █ █▄▄   █▄▄ █ █ █▄▀',
+];
+
+function buildReportText(exportedAt) {
+    const filename = audioFile ? audioFile.name : '(unknown)';
+    const orig = totalDuration;
+    const out = getFinalTotalDuration();
+    const delta = Math.round(out - orig);
+    const factor = orig > 0 ? out / orig : 1;
+    const pad = (v, n) => String(v).padEnd(n);
+
+    const lines = [
+        ...MUSICLAB_LOGO,
+        '',
+        'processing report',
+        '=================',
+        'Original file:   ' + filename,
+        'Exported:        ' + exportedAt,
+        'Original length: ' + formatTime(orig),
+        'Output length:   ' + formatTime(out) +
+            '  (' + (delta >= 0 ? '+' : '-') + Math.abs(delta) + 's, ' +
+            factor.toFixed(2) + 'x overall)',
+        'Sections:        ' + segments.length,
+        '',
+        '  ' + pad('#', 4) + pad('Time (original)', 20) + pad('Speed', 8) + pad('Volume', 9) + 'Output',
+    ];
+
+    let prev = 0;
+    segments.forEach((seg, i) => {
+        const end = seg.endTime ?? totalDuration;
+        const range = formatTime(prev) + ' - ' + formatTime(end);
+        let row = '  ' + pad(segLabel(i), 4) + pad(range, 20);
+        if (seg.skip) {
+            row += pad('SKIP', 8) + pad('-', 9) + '-';
+        } else {
+            row += pad(Math.round(seg.speed * 100) + '%', 8) +
+                pad(Math.round(seg.volume * 100) + '%', 9) +
+                formatTime((end - prev) / seg.speed);
+        }
+        lines.push(row);
+        prev = end;
+    });
+
+    lines.push('');
+    lines.push('Made with MusicLab - https://musiclab.jyylab.cc');
+    return lines.join('\n');
+}
+
+// Two-digit padded date parts for filename + in-report timestamps.
+function reportStamps() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    const ymd = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    const hm = p(d.getHours()) + ':' + p(d.getMinutes());
+    return {
+        human: ymd + ' ' + hm,
+        file: ymd.replace(/-/g, '') + '_' + hm.replace(':', ''),
+    };
+}
+
+// Download as <original-name>_report_<date>_<time>.txt so repeated exports do
+// not overwrite each other and each matches its mp3. Client-side only.
+function downloadReport() {
+    const stamps = reportStamps();
+    const base = (audioFile ? audioFile.name : 'project').replace(/\.[^.]+$/, '');
+    const blob = new Blob([buildReportText(stamps.human)], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = base + '_report_' + stamps.file + '.txt';
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 function showUploadError(msg) {
@@ -217,9 +443,17 @@ function applyGainSchedule() {
     }
 }
 
-function play() {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+async function play() {
+    // A backgrounded tab (especially iOS Safari) can leave the context
+    // suspended, interrupted, or fully closed; recover from all three so the
+    // play button still works when the user comes back.
+    if (!audioCtx || audioCtx.state === 'closed') {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        gainNode = null;
+    }
+    if (audioCtx.state !== 'running') {
+        try { await audioCtx.resume(); } catch (e) { /* resume needs a gesture; ignore */ }
+    }
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (!gainNode || gainNode.context !== audioCtx) {
         gainNode = audioCtx.createGain();
@@ -252,6 +486,17 @@ function pause() {
     cancelAnimationFrame(animFrameId);
     updatePlayUI();
     updatePlayheadUI();
+}
+
+// Skip-to-start: like the |< control in most players, jump to 0 and play.
+function playFromStart() {
+    if (!audioBuffer) return;
+    if (isPlaying) {
+        cancelAnimationFrame(animFrameId);
+        if (sourceNode) { sourceNode.onended = null; sourceNode.stop(); sourceNode = null; }
+    }
+    playOffset = 0;
+    play();
 }
 
 function updatePlayUI() {
@@ -338,6 +583,24 @@ function highlightSegmentRow(i) {
     setTimeout(() => row.classList.remove('highlight'), 1200);
 }
 
+// Reveal the editor UI and sync the header, zoom, and waveform to the current
+// state. Shared by a fresh upload (handleFile) and a restored session.
+function revealEditor(filename) {
+    hideResumeModal();
+    document.getElementById('upload-zone').style.display = 'none';
+    document.getElementById('player-section').style.display = 'block';
+    document.getElementById('sections-block').style.display = 'block';
+    document.getElementById('output-block').style.display = 'block';
+    document.getElementById('player-filename').textContent = '— ' + filename;
+    document.getElementById('player-total').textContent = formatTime(totalDuration);
+    document.getElementById('zoom-slider').value = waveformZoom;
+    document.getElementById('zoom-value').textContent = waveformZoom.toFixed(1) + 'x';
+    updatePlayUI();
+    drawWaveform();
+    updatePlayheadUI();
+    renderSegments();
+}
+
 function renderSegments() {
     const container = document.getElementById('segments-container');
     container.innerHTML = '';
@@ -417,12 +680,10 @@ function renderSegments() {
         prevEnd = seg.endTime ?? totalDuration;
     });
 
-    document.getElementById('crossfade-tip').style.display =
-        segments.length > 1 ? 'block' : 'none';
-
     renderSectionLane();
     updatePredictedDuration();
     if (isPlaying) applyGainSchedule();
+    saveMeta();
 }
 
 function addSegment() {
@@ -547,9 +808,20 @@ async function runAndExport() {
         alert('Upload an audio file first.');
         return;
     }
+    // Backstop for the expiry timer (which a sleeping device can miss): block
+    // export of a session past its one-week window and show the expired notice.
+    if (sessionExpired || (sessionSavedAt && Date.now() - sessionSavedAt >= SESSION_TTL_MS)) {
+        expireSession();
+        return;
+    }
     if (segments.length > 0 && segments.every(s => s.skip)) {
         showNotification('All sections are skipped - nothing to export.');
         return;
+    }
+    // The report reflects the current settings and needs no server, so grab it
+    // up front - the user keeps it even if the mp3 export later fails.
+    if (document.getElementById('export-report-check').checked) {
+        downloadReport();
     }
     setBusy(true);
 
@@ -644,9 +916,31 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.files[0]) handleFile(e.target.files[0]);
     });
 
+    // Returning-user modal
+    document.getElementById('resume-continue-btn').addEventListener('click', () => {
+        if (pendingSession) restoreSession(pendingSession);
+    });
+    document.getElementById('resume-newedit-btn').addEventListener('click', () => {
+        // Keep the saved session until a new upload overwrites it, so an
+        // accidental tap here is recoverable by refreshing the page.
+        hideResumeModal();
+    });
+    checkForSavedSession();
+
     // Player
+    document.getElementById('restart-btn').addEventListener('click', playFromStart);
     document.getElementById('play-btn').addEventListener('click', togglePlay);
     document.getElementById('waveform-wrap').addEventListener('click', seekTo);
+
+    // Collapsible "learn more" help panels
+    function wireInfoToggle(btnId, panelId) {
+        document.getElementById(btnId).addEventListener('click', () => {
+            const panel = document.getElementById(panelId);
+            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+        });
+    }
+    wireInfoToggle('shortcuts-toggle', 'shortcuts-panel');
+    wireInfoToggle('crossfade-toggle', 'crossfade-panel');
 
     // Waveform zoom: keep the playhead anchored at its on-screen position,
     // or keep the view centre in place when the playhead is off-screen
@@ -731,6 +1025,10 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             togglePlay();
         }
+        if (e.code === 'ArrowLeft' && document.activeElement === document.body) {
+            e.preventDefault();
+            playFromStart();
+        }
         if ((e.code === 'Enter' || e.code === 'NumpadEnter') && document.activeElement === document.body) {
             e.preventDefault();
             addSegment();
@@ -759,6 +1057,8 @@ document.addEventListener('DOMContentLoaded', () => {
             segments[parseInt(e.target.dataset.index, 10)].skip = e.target.checked;
             renderSegments();
         }
+        // commitSegmentSpeed/Volume do not re-render, so persist here too
+        saveMeta();
     });
     segContainer.addEventListener('input', e => {
         if (e.target.classList.contains('seg-speed')) {
@@ -793,6 +1093,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const base = isNaN(cur) ? (segments[i].endTime ?? totalDuration) : cur;
             updateSegmentEnd(i, (base + step).toFixed(2));
         }
+        // commitSegmentSpeed/Volume do not re-render, so persist stepper edits here too
+        saveMeta();
     });
 
     // ── File Handling ────────────────────────────────────────────────
@@ -831,21 +1133,10 @@ document.addEventListener('DOMContentLoaded', () => {
             playOffset = 0;
             isPlaying = false;
             waveformZoom = 1;
-            document.getElementById('zoom-slider').value = 1;
-            document.getElementById('zoom-value').textContent = '1.0x';
-            updatePlayUI();
-
-            document.getElementById('upload-zone').style.display = 'none';
-            document.getElementById('player-section').style.display = 'block';
-            document.getElementById('sections-block').style.display = 'block';
-            document.getElementById('output-block').style.display = 'block';
-            document.getElementById('player-filename').textContent = '— ' + file.name;
-            document.getElementById('player-total').textContent = formatTime(totalDuration);
-
-            drawWaveform();
-            updatePlayheadUI();
             segments = [{ endTime: null, speed: 1.0, volume: 1.0, skip: false }];
-            renderSegments();
+            revealEditor(file.name);
+            saveBlob(audioFile);
+            saveMeta();
         } catch (e) {
             if (ctx) ctx.close();
             const zone = document.getElementById('upload-zone');

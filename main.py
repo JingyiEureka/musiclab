@@ -63,7 +63,7 @@ os.makedirs("outputs", exist_ok=True)
 # 格式: {"task_id": {"status": "pending" | "processing" | "done" | "failed", "file_url": "..."}}
 TASKS_DB = {}
 
-CLEANUP_MAX_AGE_SECONDS = 60 * 60
+CLEANUP_MAX_AGE_SECONDS = 24 * 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_ACTIVE_TASKS = 3
 SESSION_COOKIE = "session"
