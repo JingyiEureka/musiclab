@@ -55,11 +55,20 @@ def crossfade(a, b, sr, is_stereo=False, fade_sec=0.02):
 
 
 def process_audio(
-    input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+    input_path,
+    output_path,
+    timestamps,
+    speeds,
+    overall_factor=1.0,
+    volumes=None,
+    progress_cb=None,
 ):
     """
     Process audio: slice at timestamps, apply per-segment speed and volume
     changes, crossfade, and export to output_path.
+
+    progress_cb, if given, is called as progress_cb(fraction, stage) where
+    fraction goes 0..1 and stage is a short label like "section 2/5".
     """
     if len(speeds) != len(timestamps) + 1:
         raise ValueError(
@@ -85,6 +94,8 @@ def process_audio(
     except Exception as e:
         raise AudioDecodeError(str(e)) from e
     is_stereo = y.ndim > 1
+    if progress_cb:
+        progress_cb(0.10, "loading")
 
     sample_indices = [int(t * sr) for t in timestamps]
 
@@ -96,6 +107,14 @@ def process_audio(
         slices.append(segment)
         start_idx = end_idx
     slices.append(y[:, start_idx:] if is_stereo else y[start_idx:])
+
+    # progress weight per segment ~ output length (what stretch cost scales with)
+    weights = [
+        0 if speed == 0 else s.shape[-1] / speed
+        for s, speed in zip(slices, final_speeds)
+    ]
+    total_weight = sum(weights) or 1
+    done_weight = 0.0
 
     final_audio = None
     prev_i = prev_speed = prev_volume = None
@@ -131,10 +150,19 @@ def process_audio(
             final_audio = crossfade(final_audio, segment, sr, is_stereo)
         prev_i, prev_speed, prev_volume = i, speed, volume
 
+        done_weight += weights[i]
+        if progress_cb:
+            progress_cb(
+                0.10 + 0.75 * done_weight / total_weight,
+                f"section {i + 1}/{len(slices)}",
+            )
+
     if final_audio is None:
         raise ValueError("All segments removed, nothing to export.")
 
     print("Writing output...")
+    if progress_cb:
+        progress_cb(0.85, "encoding")
     # RMS compensation in stretch() can push peaks past ±1, which the 16-bit
     # WAV write would hard-clip into distortion; clip explicitly instead
     final_audio = np.clip(final_audio, -1.0, 1.0)
@@ -150,6 +178,8 @@ def process_audio(
             stderr=subprocess.DEVNULL,
         )
         os.remove(temp_wav)
+        if progress_cb:
+            progress_cb(1.0, "done")
         print(f"Done: {output_path}")
     except Exception as e:
         print(f"MP3 conversion failed, WAV kept at: {temp_wav}. Error: {e}")

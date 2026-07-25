@@ -41,6 +41,7 @@ function setBusy(busy) {
     isBusy = busy;
     // once the session has expired, export stays disabled regardless of busy
     document.getElementById('export-btn').disabled = busy || sessionExpired;
+    document.getElementById('preview-btn').disabled = busy;
     document.getElementById('audio-file-input').disabled = busy;
     document.getElementById('upload-zone').classList.toggle('disabled', busy);
 }
@@ -131,6 +132,7 @@ function expireSession() {
     sessionExpired = true;
     idbClear().catch(() => {});
     if (isPlaying) pause();
+    stopPet();
     document.getElementById('export-btn').disabled = true;
     const banner = document.getElementById('status-banner');
     clearTimeout(bannerHideTimer);
@@ -295,6 +297,43 @@ function formatTime(s) {
     const sec = Math.floor(s % 60);
     const dec = Math.floor((s % 1) * 100);
     return `${m}:${sec.toString().padStart(2, '0')}.${dec.toString().padStart(2, '0')}`;
+}
+
+// ── Lab pet + progress bar (shown in the status banner) ─────────
+const PET_FRAMES = [
+    ' /\\_/\\  .♪ \nd( o.o )b',
+    ' /\\_/\\  ♪. \nd( o.o )b',
+    ' /\\_/\\ ♪ .*\nd( -.- )b',
+    ' /\\_/\\  .♫ \nd( ^.^ )b',
+];
+let petTimer = null;
+
+function startPet() {
+    const el = document.getElementById('pet-frame');
+    el.style.display = 'block';
+    el.textContent = PET_FRAMES[0];
+    let i = 1;
+    clearInterval(petTimer);
+    petTimer = setInterval(() => {
+        el.textContent = PET_FRAMES[i % PET_FRAMES.length];
+        i++;
+    }, 500);
+}
+
+function stopPet() {
+    clearInterval(petTimer);
+    petTimer = null;
+    document.getElementById('pet-frame').style.display = 'none';
+    document.getElementById('progress-line').textContent = '';
+}
+
+function renderProgress(progress) {
+    const el = document.getElementById('progress-line');
+    if (!progress) { el.textContent = ''; return; }
+    const width = 16;
+    const filled = Math.round(progress.frac * width);
+    el.textContent = '[' + '#'.repeat(filled) + '.'.repeat(width - filled) + '] '
+        + Math.round(progress.frac * 100) + '% - ' + progress.stage;
 }
 
 // ── Duration Prediction ─────────────────────────────────────────
@@ -463,6 +502,7 @@ async function play() {
     if (audioCtx.state !== 'running') {
         try { await audioCtx.resume(); } catch (e) { /* resume needs a gesture; ignore */ }
     }
+    stopPreviewPlayback();
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (!gainNode || gainNode.context !== audioCtx) {
         gainNode = audioCtx.createGain();
@@ -802,6 +842,164 @@ function commitSegmentVolume(i) {
     if (isPlaying) applyGainSchedule();
 }
 
+// ── Preview render ──────────────────────────────────────────────
+// Preview = a real export of a short window around the playhead, through the
+// exact same server pipeline, played inline. Same engine, same sound.
+const PREVIEW_SPAN = 16; // seconds
+
+// Encode a [t0, t1) slice of an AudioBuffer as a 16-bit PCM WAV blob.
+function audioBufferToWav(buffer, t0, t1) {
+    const sr = buffer.sampleRate;
+    const start = Math.floor(t0 * sr);
+    const end = Math.min(buffer.length, Math.ceil(t1 * sr));
+    const frames = end - start;
+    const channels = Math.min(2, buffer.numberOfChannels);
+    const data = new DataView(new ArrayBuffer(44 + frames * channels * 2));
+    const writeStr = (off, s) => {
+        for (let i = 0; i < s.length; i++) data.setUint8(off + i, s.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    data.setUint32(4, 36 + frames * channels * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    data.setUint32(16, 16, true);
+    data.setUint16(20, 1, true); // PCM
+    data.setUint16(22, channels, true);
+    data.setUint32(24, sr, true);
+    data.setUint32(28, sr * channels * 2, true);
+    data.setUint16(32, channels * 2, true);
+    data.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    data.setUint32(40, frames * channels * 2, true);
+    let off = 44;
+    for (let i = 0; i < frames; i++) {
+        for (let c = 0; c < channels; c++) {
+            const v = Math.max(-1, Math.min(1, buffer.getChannelData(c)[start + i]));
+            data.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+            off += 2;
+        }
+    }
+    return new Blob([data.buffer], { type: 'audio/wav' });
+}
+
+// A PREVIEW_SPAN window centred on t, with each edge snapped outward to a
+// nearby section boundary: full sections preview identically to the export
+// (the RMS gain compensation in the backend is computed per section).
+function previewWindow(t) {
+    let w0 = Math.max(0, t - PREVIEW_SPAN / 2);
+    let w1 = Math.min(totalDuration, w0 + PREVIEW_SPAN);
+    let start = 0;
+    segments.forEach(seg => {
+        const end = seg.endTime ?? totalDuration;
+        if (w0 > start && w0 < end && w0 - start <= 4) w0 = start;
+        if (w1 > start && w1 < end && end - w1 <= 4) w1 = end;
+        start = end;
+    });
+    return [w0, w1];
+}
+
+// Map the sections overlapping [w0, w1) to slice-relative arrays in the same
+// shape runAndExport builds for the full file.
+function buildWindowParams(w0, w1) {
+    const timestamps = [], speeds = [], volumes = [];
+    let start = 0;
+    segments.forEach(seg => {
+        const end = seg.endTime ?? totalDuration;
+        if (end > w0 && start < w1) {
+            speeds.push(seg.skip ? 0 : seg.speed);
+            volumes.push(seg.volume);
+            if (end < w1) timestamps.push(end - w0);
+        }
+        start = end;
+    });
+    return { timestamps, speeds, volumes };
+}
+
+let previewSource = null;
+
+function stopPreviewPlayback() {
+    if (previewSource) {
+        previewSource.onended = null;
+        previewSource.stop();
+        previewSource = null;
+    }
+}
+
+async function playPreviewBytes(bytes) {
+    // the context can be closed if the tab was backgrounded while waiting
+    if (!audioCtx || audioCtx.state === 'closed') {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        gainNode = null;
+    }
+    if (audioCtx.state !== 'running') {
+        try { await audioCtx.resume(); } catch (e) { /* ignore */ }
+    }
+    const buffer = await audioCtx.decodeAudioData(bytes);
+    stopPreviewPlayback();
+    previewSource = audioCtx.createBufferSource();
+    previewSource.buffer = buffer;
+    previewSource.connect(audioCtx.destination);
+    previewSource.onended = () => { previewSource = null; };
+    previewSource.start();
+}
+
+function resetPreviewUI() {
+    const btn = document.getElementById('preview-btn');
+    btn.disabled = false;
+    btn.textContent = '[ Preview ]';
+    setBusy(false);
+}
+
+async function runPreview() {
+    if (!audioBuffer || isBusy || sessionExpired) return;
+    // resume inside the click gesture so playback is unlocked on iOS
+    if (audioCtx && audioCtx.state !== 'running') audioCtx.resume().catch(() => {});
+    const [w0, w1] = previewWindow(getCurrentTime());
+    const params = buildWindowParams(w0, w1);
+    if (params.speeds.length === 0 || params.speeds.every(s => s === 0)) {
+        showNotification('All sections in the preview window are skipped.');
+        return;
+    }
+    if (isPlaying) pause();
+    const btn = document.getElementById('preview-btn');
+    btn.disabled = true;
+    btn.textContent = '[ Preview... ]';
+    setBusy(true);
+    try {
+        const fd = new FormData();
+        fd.append('file', audioBufferToWav(audioBuffer, w0, w1), 'preview.wav');
+        fd.append('timestamps_str', JSON.stringify(params.timestamps));
+        fd.append('speeds_str', JSON.stringify(params.speeds));
+        fd.append('overall_factor', 1.0);
+        fd.append('volumes_str', JSON.stringify(params.volumes));
+
+        const resp = await fetchWithRetry(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+        pollStatus(data.task_id, {
+            onDone: async d => {
+                try {
+                    const mp3 = await fetch(CONFIG.API_BASE_URL + d.file_url);
+                    await playPreviewBytes(await mp3.arrayBuffer());
+                } catch (e) {
+                    showNotification('Preview failed - please try again.');
+                }
+                resetPreviewUI();
+            },
+            onFail: msg => {
+                showNotification(msg);
+                resetPreviewUI();
+            },
+        });
+    } catch (e) {
+        showNotification(e instanceof TypeError
+            ? 'connection failed - check your network and try again.'
+            : e.message);
+        resetPreviewUI();
+    }
+}
+
 // ── Export ──────────────────────────────────────────────────────
 // fetch() rejects with TypeError only when the request died at the network
 // level (no HTTP response at all) - a phone radio waking from idle or a
@@ -841,17 +1039,13 @@ async function runAndExport() {
         showNotification('All sections are skipped - nothing to export.');
         return;
     }
-    // The report reflects the current settings and needs no server, so grab it
-    // up front - the user keeps it even if the mp3 export later fails.
-    if (document.getElementById('export-report-check').checked) {
-        downloadReport();
-    }
     setBusy(true);
 
     clearTimeout(bannerHideTimer);
     banner.style.display = 'block';
     banner.className = 'proc';
     statusText.textContent = 'uploading...';
+    startPet();
 
     try {
         const fd = new FormData();
@@ -868,6 +1062,7 @@ async function runAndExport() {
         statusText.textContent = 'processing...';
         checkTaskProgress(data.task_id);
     } catch (e) {
+        stopPet();
         banner.className = 'fail';
         // TypeError = network-level failure (WebKit says "Load failed",
         // Chromium "Failed to fetch") - give an actionable message instead
@@ -880,11 +1075,10 @@ async function runAndExport() {
 
 let bannerHideTimer = null;
 
-function checkTaskProgress(taskId) {
-    const banner = document.getElementById('status-banner');
-    const statusText = document.getElementById('status-text');
+// Poll /check-status/ until the task ends; the callbacks decide what the
+// result means (export downloads the mp3, preview plays it inline).
+function pollStatus(taskId, { onProgress, onDone, onFail }) {
     let pollFailures = 0;
-
     const interval = setInterval(async () => {
         try {
             const res = await fetch(`${CONFIG.API_BASE_URL}/check-status/${taskId}`);
@@ -892,25 +1086,14 @@ function checkTaskProgress(taskId) {
             if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
             pollFailures = 0;
 
-            if (data.status === 'processing') {
-                statusText.textContent = 'processing...';
-            } else if (data.status === 'done') {
+            if (data.status === 'done') {
                 clearInterval(interval);
-                const fileUrl = CONFIG.API_BASE_URL + data.file_url;
-                banner.className = 'ok';
-                statusText.innerHTML = `done &mdash; <a href="${fileUrl}">download mp3</a>`;
-                const a = document.createElement('a');
-                a.href = fileUrl;
-                a.download = `musiclab_${taskId}.mp3`;
-                a.click();
-                setBusy(false);
-                clearTimeout(bannerHideTimer);
-                bannerHideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
+                onDone(data);
             } else if (data.status === 'failed') {
                 clearInterval(interval);
-                banner.className = 'fail';
-                statusText.textContent = ERROR_MESSAGES[data.error] || ERROR_MESSAGES.server_error;
-                setBusy(false);
+                onFail(ERROR_MESSAGES[data.error] || ERROR_MESSAGES.server_error);
+            } else if (onProgress) {
+                onProgress(data.progress);
             }
         } catch (err) {
             // a brief network blip should not kill the poll while the server
@@ -918,13 +1101,47 @@ function checkTaskProgress(taskId) {
             pollFailures++;
             if (pollFailures < 3) return;
             clearInterval(interval);
-            banner.className = 'fail';
-            statusText.textContent = err instanceof TypeError
+            onFail(err instanceof TypeError
                 ? 'connection failed - check your network and try again.'
-                : 'error: ' + err.message;
-            setBusy(false);
+                : 'error: ' + err.message);
         }
     }, CONFIG.POLLING_INTERVAL_MS);
+}
+
+function checkTaskProgress(taskId) {
+    const banner = document.getElementById('status-banner');
+    const statusText = document.getElementById('status-text');
+    pollStatus(taskId, {
+        onProgress: p => {
+            statusText.textContent = 'processing...';
+            renderProgress(p);
+        },
+        onDone: data => {
+            stopPet();
+            const fileUrl = CONFIG.API_BASE_URL + data.file_url;
+            banner.className = 'ok';
+            statusText.innerHTML = `done &mdash; <a href="${fileUrl}">download mp3</a>`;
+            const a = document.createElement('a');
+            a.href = fileUrl;
+            a.download = `musiclab_${taskId}.mp3`;
+            a.click();
+            // generate the report together with the mp3 so both filenames
+            // carry (nearly) the same timestamp; stagger the second download
+            // so browsers don't flag simultaneous automatic downloads
+            if (document.getElementById('export-report-check').checked) {
+                setTimeout(downloadReport, 800);
+            }
+            setBusy(false);
+            clearTimeout(bannerHideTimer);
+            bannerHideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
+        },
+        onFail: msg => {
+            stopPet();
+            banner.className = 'fail';
+            statusText.textContent = msg;
+            setBusy(false);
+        },
+    });
 }
 
 // ── Init ─────────────────────────────────────────────────────────
@@ -963,6 +1180,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Player
     document.getElementById('restart-btn').addEventListener('click', playFromStart);
     document.getElementById('play-btn').addEventListener('click', togglePlay);
+    document.getElementById('preview-btn').addEventListener('click', runPreview);
     document.getElementById('waveform-wrap').addEventListener('click', seekTo);
 
     // Collapsible "learn more" help panels

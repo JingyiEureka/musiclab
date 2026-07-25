@@ -194,6 +194,12 @@ def background_audio_task(
     overall_factor: float,
     volumes: list,
 ):
+    def report_progress(frac, stage):
+        # the task record can be pruned by cleanup while we run; don't crash
+        task = TASKS_DB.get(task_id)
+        if task:
+            task["progress"] = {"frac": frac, "stage": stage}
+
     TASKS_DB[task_id]["status"] = "processing"
     try:
         logger.info(
@@ -204,7 +210,13 @@ def background_audio_task(
             volumes,
         )
         process_audio(
-            input_path, output_path, timestamps, speeds, overall_factor, volumes
+            input_path,
+            output_path,
+            timestamps,
+            speeds,
+            overall_factor,
+            volumes,
+            progress_cb=report_progress,
         )
 
         # 处理成功，更新状态
@@ -315,6 +327,7 @@ async def upload_audio(
         "status": "pending",
         "file_url": None,
         "error": None,
+        "progress": {"frac": 0.0, "stage": "queued"},
         "original_filename": input_filename,
         "session": sid,
         "created": time.time(),
@@ -382,6 +395,7 @@ async def check_status(task_id: str, request: Request):
         "status": task["status"],
         "file_url": task["file_url"],
         "error": task["error"],
+        "progress": task.get("progress"),
     }
 
 

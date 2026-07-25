@@ -9,7 +9,13 @@ from speed_changer import AudioDecodeError
 
 
 def fake_process_audio(
-    input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+    input_path,
+    output_path,
+    timestamps,
+    speeds,
+    overall_factor=1.0,
+    volumes=None,
+    progress_cb=None,
 ):
     with open(output_path, "wb") as f:
         f.write(b"mp3")
@@ -205,7 +211,13 @@ def test_volumes_passed_to_process_audio(monkeypatch):
     received = {}
 
     def recording_fake(
-        input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+        input_path,
+        output_path,
+        timestamps,
+        speeds,
+        overall_factor=1.0,
+        volumes=None,
+        progress_cb=None,
     ):
         received["volumes"] = volumes
         with open(output_path, "wb") as f:
@@ -221,7 +233,13 @@ def test_volumes_default_all_ones(monkeypatch):
     received = {}
 
     def recording_fake(
-        input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+        input_path,
+        output_path,
+        timestamps,
+        speeds,
+        overall_factor=1.0,
+        volumes=None,
+        progress_cb=None,
     ):
         received["volumes"] = volumes
         with open(output_path, "wb") as f:
@@ -233,8 +251,15 @@ def test_volumes_default_all_ones(monkeypatch):
     assert received["volumes"] == [1.0]
 
 
+def test_check_status_includes_progress():
+    client = TestClient(main.app)
+    task_id = upload(client).json()["task_id"]
+    status = client.get(f"/check-status/{task_id}")
+    assert "progress" in status.json()
+
+
 def test_failed_task_reports_error_code(monkeypatch):
-    def broken(*args):
+    def broken(*args, **kwargs):
         raise AudioDecodeError("bad file")
 
     monkeypatch.setattr(main, "process_audio", broken)
