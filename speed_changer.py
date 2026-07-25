@@ -54,15 +54,25 @@ def crossfade(a, b, sr, is_stereo=False, fade_sec=0.02):
         return np.concatenate((a[:-fade_samples], blended, b[fade_samples:]), axis=-1)
 
 
-def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.0):
+def process_audio(
+    input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+):
     """
-    Process audio: slice at timestamps, apply per-segment speed changes,
-    crossfade, and export to output_path.
+    Process audio: slice at timestamps, apply per-segment speed and volume
+    changes, crossfade, and export to output_path.
     """
     if len(speeds) != len(timestamps) + 1:
         raise ValueError(
             f"Array length mismatch: {len(timestamps)} timestamps "
             f"requires {len(timestamps) + 1} speeds."
+        )
+
+    if volumes is None:
+        volumes = [1.0] * len(speeds)
+    if len(volumes) != len(speeds):
+        raise ValueError(
+            f"Array length mismatch: {len(speeds)} speeds "
+            f"requires {len(speeds)} volumes."
         )
 
     final_speeds = [s * overall_factor for s in speeds]
@@ -87,8 +97,11 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
         start_idx = end_idx
     slices.append(y[:, start_idx:] if is_stereo else y[start_idx:])
 
-    stretched_slices = []
-    for i, (audio_slice, speed) in enumerate(zip(slices, final_speeds)):
+    final_audio = None
+    prev_i = prev_speed = prev_volume = None
+    for i, (audio_slice, speed, volume) in enumerate(
+        zip(slices, final_speeds, volumes)
+    ):
         start_time = 0 if i == 0 else timestamps[i - 1]
         end_time = timestamps[i] if i < len(timestamps) else "end"
 
@@ -99,17 +112,27 @@ def process_audio(input_path, output_path, timestamps, speeds, overall_factor=1.
 
         print(
             f"Processing segment {i + 1} ({start_time}s - {end_time}s), "
-            f"speed: {speed * 100:.1f}%"
+            f"speed: {speed * 100:.1f}%, volume: {volume * 100:.1f}%"
         )
-        stretched_slices.append(stretch(audio_slice, speed, is_stereo))
+        segment = stretch(audio_slice, speed, is_stereo)
+        # gain before crossfade so the fade blends the two loudness levels
+        if volume != 1.0:
+            segment = np.clip(segment * volume, -1.0, 1.0)
 
-    if not stretched_slices:
+        if final_audio is None:
+            final_audio = segment
+        elif prev_i == i - 1 and speed == prev_speed == 1.0 and volume == prev_volume:
+            # unstretched, same volume, nothing removed between: the audio
+            # is continuous across this seam, so join it without a crossfade.
+            # Stretched slices are not continuous even at equal speeds,
+            # because each slice is stretched and gain-compensated on its own.
+            final_audio = np.concatenate((final_audio, segment), axis=-1)
+        else:
+            final_audio = crossfade(final_audio, segment, sr, is_stereo)
+        prev_i, prev_speed, prev_volume = i, speed, volume
+
+    if final_audio is None:
         raise ValueError("All segments removed, nothing to export.")
-
-    print("Crossfading and concatenating...")
-    final_audio = stretched_slices[0]
-    for next_slice in stretched_slices[1:]:
-        final_audio = crossfade(final_audio, next_slice, sr, is_stereo)
 
     print("Writing output...")
     temp_wav = f"temp_output_{uuid.uuid4().hex}.wav"

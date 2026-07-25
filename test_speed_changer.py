@@ -1,5 +1,7 @@
+import librosa
 import numpy as np
 import pytest
+import soundfile as sf
 
 from speed_changer import crossfade, process_audio, stretch
 
@@ -116,3 +118,104 @@ class TestProcessAudioValidation:
                 timestamps=[10],
                 speeds=[1.0, 1.0],
             )
+
+    def test_mismatched_volumes_raises(self):
+        with pytest.raises(ValueError, match="length mismatch"):
+            process_audio(
+                "dummy.mp3",
+                "out.mp3",
+                timestamps=[10],
+                speeds=[1.0, 1.0],
+                volumes=[1.0],  # should be 2 volumes for 2 speeds
+            )
+
+
+class TestSeamJoining:
+    def test_same_settings_joins_without_crossfade(self, tmp_path):
+        sr = 22050
+        audio = make_sine(2.0, sr)
+        input_path = str(tmp_path / "in.wav")
+        output_path = str(tmp_path / "out.wav")
+        sf.write(input_path, audio, sr)
+
+        process_audio(input_path, output_path, timestamps=[1.0], speeds=[1.0, 1.0])
+        result, _ = librosa.load(output_path, sr=None)
+
+        # a continuous seam loses no samples and reproduces the input exactly
+        assert len(result) == len(audio)
+        np.testing.assert_allclose(result, audio, atol=1e-3)
+
+    def test_equal_stretched_speeds_keep_crossfade(self, tmp_path, monkeypatch):
+        import speed_changer
+
+        sr = 22050
+        audio = make_sine(2.0, sr)
+        input_path = str(tmp_path / "in.wav")
+        output_path = str(tmp_path / "out.wav")
+        sf.write(input_path, audio, sr)
+
+        calls = []
+        real_crossfade = speed_changer.crossfade
+
+        def counting_crossfade(*args, **kwargs):
+            calls.append(1)
+            return real_crossfade(*args, **kwargs)
+
+        monkeypatch.setattr(speed_changer, "crossfade", counting_crossfade)
+
+        # equal speeds, but stretched slices are processed independently,
+        # so the seam is not continuous and must still be crossfaded
+        process_audio(input_path, output_path, timestamps=[1.0], speeds=[0.8, 0.8])
+        assert len(calls) == 1
+
+    def test_different_volume_keeps_crossfade(self, tmp_path):
+        sr = 22050
+        audio = make_sine(2.0, sr)
+        input_path = str(tmp_path / "in.wav")
+        output_path = str(tmp_path / "out.wav")
+        sf.write(input_path, audio, sr)
+
+        process_audio(
+            input_path,
+            output_path,
+            timestamps=[1.0],
+            speeds=[1.0, 1.0],
+            volumes=[1.0, 0.5],
+        )
+        result, _ = librosa.load(output_path, sr=None)
+
+        # a volume step is a discontinuity, so the 20ms crossfade stays
+        assert len(result) == len(audio) - int(0.02 * sr)
+
+
+class TestProcessAudioVolume:
+    def write_sine_wav(self, path, amplitude=0.5, duration=2.0, sr=22050):
+        sf.write(path, make_sine(duration, sr) * amplitude, sr)
+        return sr
+
+    def test_volume_scales_output_rms(self, tmp_path):
+        input_path = str(tmp_path / "in.wav")
+        output_path = str(tmp_path / "out.mp3")
+        self.write_sine_wav(input_path)
+
+        process_audio(input_path, output_path, timestamps=[], speeds=[1.0])
+        full, _ = librosa.load(output_path, sr=None)
+        process_audio(
+            input_path, output_path, timestamps=[], speeds=[1.0], volumes=[0.5]
+        )
+        halved, _ = librosa.load(output_path, sr=None)
+
+        rms_full = np.sqrt(np.mean(full**2))
+        rms_halved = np.sqrt(np.mean(halved**2))
+        assert abs(rms_halved / rms_full - 0.5) < 0.1
+
+    def test_volume_clips_to_valid_range(self, tmp_path):
+        input_path = str(tmp_path / "in.wav")
+        output_path = str(tmp_path / "out.mp3")
+        self.write_sine_wav(input_path, amplitude=0.9)
+
+        process_audio(
+            input_path, output_path, timestamps=[], speeds=[1.0], volumes=[4.0]
+        )
+        result, _ = librosa.load(output_path, sr=None)
+        assert np.max(np.abs(result)) <= 1.05  # mp3 encoding overshoot tolerance

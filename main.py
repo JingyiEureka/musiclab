@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -66,6 +67,34 @@ CLEANUP_MAX_AGE_SECONDS = 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_ACTIVE_TASKS = 3
 SESSION_COOKIE = "session"
+MAX_SPEED = 8.0  # matches the frontend clamp (800%); 0 marks a skipped section
+MAX_VOLUME = 4.0  # matches the frontend clamp (400%)
+
+
+def parse_float_list(raw):
+    # 清除用户在 Swagger UI 测试时可能手滑多加的外层单引号或双引号
+    clean = raw.strip().strip("'").strip('"')
+    # 兼容情况 1：正常的 JSON，例如 "[2]" 或 "[1, 0.8]"
+    if clean.startswith("[") and clean.endswith("]"):
+        return json.loads(clean)
+    # 兼容情况 2：前端没用 JSON.stringify 而是直接 toString()，例如 "2" 或 "1,0.8"
+    return [float(x.strip()) for x in clean.split(",") if x.strip()]
+
+
+def check_range(values, name, max_value):
+    # bool 是 int 的子类，json 的 true/false 也要拒绝；NaN 与任何比较都是 False
+    for v in values:
+        if (
+            not isinstance(v, (int, float))
+            or isinstance(v, bool)
+            or math.isnan(v)
+            or v < 0
+            or v > max_value
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name}超出范围！每个值应在 0 到 {max_value:g} 之间。",
+            )
 
 
 def get_session(request: Request, response: Response) -> str:
@@ -143,16 +172,20 @@ def background_audio_task(
     timestamps: list,
     speeds: list,
     overall_factor: float,
+    volumes: list,
 ):
     TASKS_DB[task_id]["status"] = "processing"
     try:
         logger.info(
-            "Background task started: timestamps=%s, speeds=%s, overall=%s",
+            "Background task started: timestamps=%s, speeds=%s, overall=%s, volumes=%s",
             timestamps,
             speeds,
             overall_factor,
+            volumes,
         )
-        process_audio(input_path, output_path, timestamps, speeds, overall_factor)
+        process_audio(
+            input_path, output_path, timestamps, speeds, overall_factor, volumes
+        )
 
         # 处理成功，更新状态
         TASKS_DB[task_id]["status"] = "done"
@@ -189,6 +222,7 @@ async def upload_audio(
     timestamps_str: str = Form(..., description="JSON格式的时间点，如 '[25.8, 46]'"),
     speeds_str: str = Form(..., description="JSON格式的速度，如 '[1, 0.96, 0.91]'"),
     overall_factor: float = Form(1.0, description="全局速度系数"),
+    volumes_str: str = Form(None, description="JSON格式的音量，如 '[1, 0.8, 1.2]'"),
 ):
     active = sum(
         1 for t in TASKS_DB.values() if t["status"] in ("pending", "processing")
@@ -203,25 +237,19 @@ async def upload_audio(
 
     # 解析 JSON 字符串为 Python 列表
     try:
-        # 清除用户在 Swagger UI 测试时可能手滑多加的外层单引号或双引号
-        clean_timestamps = timestamps_str.strip().strip("'").strip('"')
-        clean_speeds = speeds_str.strip().strip("'").strip('"')
-
-        # 兼容情况 1：如果接收到的是正常的 JSON，例如 "[2]" 或 "[1, 0.8]"
-        if clean_timestamps.startswith("[") and clean_timestamps.endswith("]"):
-            timestamps = json.loads(clean_timestamps)
+        timestamps = parse_float_list(timestamps_str)
+        speeds = parse_float_list(speeds_str)
+        clean_volumes = (volumes_str or "").strip().strip("'").strip('"')
+        if clean_volumes:
+            volumes = parse_float_list(clean_volumes)
         else:
-            # 兼容情况 2：如果前端没用 JSON.stringify 而是直接 toString() 导致传过来的是 "2" 或 "1,0.8"
-            timestamps = [
-                float(x.strip()) for x in clean_timestamps.split(",") if x.strip()
-            ]
+            volumes = [1.0] * len(speeds)
 
-        if clean_speeds.startswith("[") and clean_speeds.endswith("]"):
-            speeds = json.loads(clean_speeds)
-        else:
-            speeds = [float(x.strip()) for x in clean_speeds.split(",") if x.strip()]
-
-        if not isinstance(timestamps, list) or not isinstance(speeds, list):
+        if (
+            not isinstance(timestamps, list)
+            or not isinstance(speeds, list)
+            or not isinstance(volumes, list)
+        ):
             raise ValueError("解析后不是列表")
 
     except Exception:
@@ -235,6 +263,13 @@ async def upload_audio(
             status_code=400,
             detail=f"数组长度不匹配！{len(timestamps)} 个时间点应该对应 {len(timestamps) + 1} 个速度值。",
         )
+    if len(volumes) != len(speeds):
+        raise HTTPException(
+            status_code=400,
+            detail=f"数组长度不匹配！{len(speeds)} 个速度值应该对应 {len(speeds)} 个音量值。",
+        )
+    check_range(speeds, "速度", MAX_SPEED)
+    check_range(volumes, "音量", MAX_VOLUME)
 
     # 1. 生成唯一的任务 ID
     task_id = str(uuid.uuid4())
@@ -267,6 +302,7 @@ async def upload_audio(
         timestamps,
         speeds,
         overall_factor,
+        volumes,
     )
     background_tasks.add_task(cleanup_stale_files)
 

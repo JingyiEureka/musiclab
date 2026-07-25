@@ -8,7 +8,9 @@ import main
 from speed_changer import AudioDecodeError
 
 
-def fake_process_audio(input_path, output_path, timestamps, speeds, overall_factor):
+def fake_process_audio(
+    input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+):
     with open(output_path, "wb") as f:
         f.write(b"mp3")
 
@@ -25,11 +27,14 @@ def clean_tasks(monkeypatch):
     main.TASKS_DB.clear()
 
 
-def upload(client, filename="song.mp3", content=b"fake audio"):
+def upload(client, filename="song.mp3", content=b"fake audio", extra_data=None):
+    data = {"timestamps_str": "[]", "speeds_str": "[1.0]"}
+    if extra_data:
+        data.update(extra_data)
     return client.post(
         "/upload-audio/",
         files={"file": (filename, content, "audio/mpeg")},
-        data={"timestamps_str": "[]", "speeds_str": "[1.0]"},
+        data=data,
     )
 
 
@@ -111,6 +116,91 @@ def test_cleanup_prunes_old_tasks():
     main.cleanup_stale_files()
     assert "old" not in main.TASKS_DB
     assert "new" in main.TASKS_DB
+
+
+def test_upload_with_volumes_completes():
+    client = TestClient(main.app)
+    resp = upload(client, extra_data={"volumes_str": "[0.5]"})
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+    assert client.get(f"/check-status/{task_id}").json()["status"] == "done"
+
+
+def test_volumes_wrong_length_400():
+    client = TestClient(main.app)
+    resp = upload(client, extra_data={"volumes_str": "[1.0, 0.5]"})
+    assert resp.status_code == 400
+
+
+def test_volumes_bad_format_400():
+    client = TestClient(main.app)
+    resp = upload(client, extra_data={"volumes_str": "not json"})
+    assert resp.status_code == 400
+
+
+def test_volumes_out_of_range_400():
+    client = TestClient(main.app)
+    resp = upload(client, extra_data={"volumes_str": "[5.0]"})
+    assert resp.status_code == 400
+
+
+def test_volumes_nan_400():
+    client = TestClient(main.app)
+    resp = upload(client, extra_data={"volumes_str": "[NaN]"})
+    assert resp.status_code == 400
+
+
+def test_volumes_bool_400():
+    client = TestClient(main.app)
+    resp = upload(client, extra_data={"volumes_str": "[true]"})
+    assert resp.status_code == 400
+
+
+def test_speeds_out_of_range_400():
+    client = TestClient(main.app)
+    for bad in ("[-1.0]", "[9.0]", "[NaN]"):
+        resp = upload(client, extra_data={"speeds_str": bad})
+        assert resp.status_code == 400
+
+
+def test_speed_zero_skip_marker_allowed():
+    client = TestClient(main.app)
+    resp = upload(
+        client, extra_data={"timestamps_str": "[1.0]", "speeds_str": "[0, 1.0]"}
+    )
+    assert resp.status_code == 200
+
+
+def test_volumes_passed_to_process_audio(monkeypatch):
+    received = {}
+
+    def recording_fake(
+        input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+    ):
+        received["volumes"] = volumes
+        with open(output_path, "wb") as f:
+            f.write(b"mp3")
+
+    monkeypatch.setattr(main, "process_audio", recording_fake)
+    client = TestClient(main.app)
+    upload(client, extra_data={"volumes_str": "[0.8]"})
+    assert received["volumes"] == [0.8]
+
+
+def test_volumes_default_all_ones(monkeypatch):
+    received = {}
+
+    def recording_fake(
+        input_path, output_path, timestamps, speeds, overall_factor=1.0, volumes=None
+    ):
+        received["volumes"] = volumes
+        with open(output_path, "wb") as f:
+            f.write(b"mp3")
+
+    monkeypatch.setattr(main, "process_audio", recording_fake)
+    client = TestClient(main.app)
+    upload(client)
+    assert received["volumes"] == [1.0]
 
 
 def test_failed_task_reports_error_code(monkeypatch):

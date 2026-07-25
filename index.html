@@ -7,7 +7,7 @@
     <title>MusicLab &mdash; music editing made easy</title>
     <meta name="description"
         content="MusicLab lets you adjust the playback speed of audio sections independently and export the result as an MP3." />
-    <link rel="stylesheet" href="/static/styles.css?v=2" />
+    <link rel="stylesheet" href="/static/styles.css?v=5" />
 </head>
 
 <body>
@@ -21,7 +21,6 @@
 █   █ █▄█ ▄▄█ █ █▄▄   █▄▄ █ █ █▄▀
             </pre>
             <div class="tagline">music editing made easy</div>
-            <div class="prompt cursor"><span id="tip-text"></span></div>
         </header>
 
         <!-- Upload / Player -->
@@ -39,10 +38,18 @@
                     <div class="waveform-wrap" id="waveform-wrap">
                         <span class="waveform-time" id="player-total">0:00</span>
                         <span class="playhead-time" id="player-current">0:00</span>
+                        <div id="section-lane">
+                            <div id="section-lane-content"></div>
+                        </div>
                         <div id="waveform-inner">
                             <div class="playhead-line" id="playhead"></div>
                             <canvas id="waveform-canvas"></canvas>
                         </div>
+                    </div>
+                    <div class="zoom-row">
+                        <span class="zoom-label">zoom</span>
+                        <input type="range" id="zoom-slider" min="1" max="8" step="0.1" value="1" />
+                        <span id="zoom-value">1.0x</span>
                     </div>
                     <div class="player-bar-row">
                         <button class="player-btn" id="play-btn">[ Play ]</button>
@@ -62,6 +69,7 @@
                 <div class="section-title">Sections</div>
                 <div id="segments-container"></div>
                 <div id="seg-notification" class="seg-notification"></div>
+                <div class="tip" id="crossfade-tip" style="display: none"># to make transitions smooth, crossfade is applied automatically</div>
             </div>
         </div>
 
@@ -84,7 +92,7 @@
 
     </div>
 
-    <script src="/static/app.js?v=2"></script>
+    <script src="/static/app.js?v=8"></script>
 </body>
 
 </html>

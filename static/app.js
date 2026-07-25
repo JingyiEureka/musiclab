@@ -23,10 +23,12 @@ let totalDuration = 0;
 // ── Player State ─────────────────────────────────────────────────
 let audioCtx = null;
 let sourceNode = null;
+let gainNode = null;
 let isPlaying = false;
 let playStartTime = 0;
 let playOffset = 0;
 let animFrameId = null;
+let waveformZoom = 1;
 
 // ── Segments State ─────────────────────────────────────────────
 let segments = [];
@@ -56,8 +58,8 @@ function formatTime(s) {
     s = Math.max(0, s);
     const m = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
-    const dec = Math.floor((s % 1) * 10);
-    return `${m}:${sec.toString().padStart(2, '0')}.${dec}`;
+    const dec = Math.floor((s % 1) * 100);
+    return `${m}:${sec.toString().padStart(2, '0')}.${dec.toString().padStart(2, '0')}`;
 }
 
 // ── Duration Prediction ─────────────────────────────────────────
@@ -93,48 +95,74 @@ function getCurrentTime() {
 }
 
 // ── Waveform ────────────────────────────────────────────────────
-function drawWaveform() {
-    const canvas = document.getElementById('waveform-canvas');
-    const wrap = document.getElementById('waveform-wrap');
-    const inner = document.getElementById('waveform-inner');
-    const dpr = window.devicePixelRatio || 1;
-    const viewW = wrap.clientWidth;
-    const waveW = Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC));
-    const H = inner.clientHeight;
-    canvas.width = waveW * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = waveW + 'px';
-    canvas.style.height = H + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+function getWaveWidth() {
+    const viewW = document.getElementById('waveform-wrap').clientWidth;
+    return Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC * waveformZoom));
+}
+
+// Pre-rendered waveform bars; rebuilt only when zoom, size, or file changes
+// so the per-frame playhead redraw is a cheap copy instead of a full rescan.
+let waveformCache = null;
+
+function buildWaveformCache(waveW, backingW, H, dpr) {
+    const off = document.createElement('canvas');
+    off.width = backingW;
+    off.height = H * dpr;
+    const ctx = off.getContext('2d');
+    ctx.setTransform(backingW / waveW, 0, 0, dpr, 0, 0);
 
     const data = audioBuffer.getChannelData(0);
     const mid = H / 2;
-    const playheadX = totalDuration > 0
-        ? (getCurrentTime() / totalDuration) * waveW
-        : 0;
-
-    ctx.clearRect(0, 0, waveW, H);
-
     const MAX_BARS = 15000;
     const barStep = waveW > MAX_BARS ? Math.ceil(waveW / MAX_BARS) : 1;
     const sampleStep = Math.ceil(data.length / waveW);
 
+    ctx.fillStyle = CONFIG.WAVEFORM_COLOR_UNPLAYED;
     for (let x = 0; x < waveW; x += barStep) {
         let min = 1, max = -1;
-        const end = Math.min(data.length, (x + 1) * sampleStep);
+        const end = Math.min(data.length, (x + barStep) * sampleStep);
         for (let j = x * sampleStep; j < end; j++) {
             const d = data[j] || 0;
             if (d < min) min = d;
             if (d > max) max = d;
         }
         const barH = Math.max(1, (max - min) * mid * 0.9);
-        ctx.fillStyle = x <= playheadX
-            ? CONFIG.WAVEFORM_COLOR_PLAYED
-            : CONFIG.WAVEFORM_COLOR_UNPLAYED;
         ctx.fillRect(x, mid - barH, barStep, barH * 2);
     }
+    waveformCache = { canvas: off, waveW, height: H * dpr, buffer: audioBuffer };
+}
+
+function drawWaveform() {
+    const canvas = document.getElementById('waveform-canvas');
+    const inner = document.getElementById('waveform-inner');
+    const dpr = window.devicePixelRatio || 1;
+    const waveW = getWaveWidth();
+    const H = inner.clientHeight;
+    // clamp the backing store: iOS Safari silently blanks very wide canvases
+    const backingW = Math.min(waveW * dpr, 16384);
+
+    if (!waveformCache || waveformCache.waveW !== waveW
+        || waveformCache.height !== H * dpr || waveformCache.buffer !== audioBuffer) {
+        buildWaveformCache(waveW, backingW, H, dpr);
+    }
+    // resizing a canvas clears and reallocates it, so only do it on change
+    if (canvas.width !== backingW) canvas.width = backingW;
+    if (canvas.height !== H * dpr) canvas.height = H * dpr;
+    canvas.style.width = waveW + 'px';
+    canvas.style.height = H + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(waveformCache.canvas, 0, 0);
+
+    // recolor the bars behind the playhead
+    const playheadX = totalDuration > 0 ? (getCurrentTime() / totalDuration) * waveW : 0;
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.fillStyle = CONFIG.WAVEFORM_COLOR_PLAYED;
+    ctx.fillRect(0, 0, playheadX * (backingW / waveW), canvas.height);
+    ctx.restore();
 }
 
 function updatePlayheadUI() {
@@ -142,7 +170,7 @@ function updatePlayheadUI() {
     const wrap = document.getElementById('waveform-wrap');
     const inner = document.getElementById('waveform-inner');
     const viewW = wrap.clientWidth;
-    const waveW = Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC));
+    const waveW = getWaveWidth();
     const playheadX = totalDuration > 0 ? (t / totalDuration) * waveW : 0;
 
     document.getElementById('playhead').style.left = playheadX + 'px';
@@ -168,13 +196,38 @@ function togglePlay() {
     }
 }
 
+// Preview the per-segment volume settings during playback by scheduling
+// gain changes at the segment boundaries ahead of the playhead.
+function applyGainSchedule() {
+    if (!gainNode || !audioCtx) return;
+    const now = audioCtx.currentTime;
+    const t = getCurrentTime();
+    gainNode.gain.cancelScheduledValues(now);
+    if (segments.length === 0) {
+        gainNode.gain.setValueAtTime(1, now);
+        return;
+    }
+    let idx = segments.findIndex(s => t < (s.endTime ?? totalDuration));
+    if (idx === -1) idx = segments.length - 1;
+    gainNode.gain.setValueAtTime(segments[idx].volume ?? 1, now);
+    for (let j = idx; j < segments.length - 1; j++) {
+        const boundary = segments[j].endTime;
+        if (boundary === null || boundary <= t) continue;
+        gainNode.gain.setValueAtTime(segments[j + 1].volume ?? 1, now + boundary - t);
+    }
+}
+
 function play() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
+    if (!gainNode || gainNode.context !== audioCtx) {
+        gainNode = audioCtx.createGain();
+        gainNode.connect(audioCtx.destination);
+    }
     sourceNode = audioCtx.createBufferSource();
     sourceNode.buffer = audioBuffer;
-    sourceNode.connect(audioCtx.destination);
+    sourceNode.connect(gainNode);
     sourceNode.start(0, playOffset);
     sourceNode.onended = () => {
         if (isPlaying) {
@@ -187,6 +240,7 @@ function play() {
     };
     playStartTime = audioCtx.currentTime - playOffset;
     isPlaying = true;
+    applyGainSchedule();
     updatePlayUI();
     animate();
 }
@@ -213,8 +267,7 @@ function seekTo(e) {
     const wrap = document.getElementById('waveform-wrap');
     const inner = document.getElementById('waveform-inner');
     const rect = wrap.getBoundingClientRect();
-    const viewW = wrap.clientWidth;
-    const waveW = Math.max(viewW, Math.ceil(totalDuration * CONFIG.WAVEFORM_PX_PER_SEC));
+    const waveW = getWaveWidth();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left + inner.scrollLeft) / waveW));
     playOffset = pct * totalDuration;
     if (isPlaying) {
@@ -231,6 +284,60 @@ function clampSpeed(mult) {
     return Math.max(0.25, Math.min(8.0, mult));
 }
 
+function clampVolume(mult) {
+    return Math.max(0, Math.min(4.0, mult));
+}
+
+// A, B, ... Z, AA, AB ... (spreadsheet-style)
+function segLabel(i) {
+    let label = '';
+    i += 1;
+    while (i > 0) {
+        i -= 1;
+        label = String.fromCharCode(65 + (i % 26)) + label;
+        i = Math.floor(i / 26);
+    }
+    return label;
+}
+
+// ── Section lane (labeled blocks above the waveform) ───────────
+function renderSectionLane() {
+    const lane = document.getElementById('section-lane-content');
+    lane.innerHTML = '';
+    if (!totalDuration || segments.length === 0) return;
+    const waveW = getWaveWidth();
+    lane.style.width = waveW + 'px';
+    let start = 0;
+    segments.forEach((seg, i) => {
+        const end = seg.endTime ?? totalDuration;
+        const block = document.createElement('div');
+        block.className = 'lane-block' + (seg.skip ? ' skipped' : '');
+        block.dataset.index = i;
+        block.style.left = (start / totalDuration) * waveW + 'px';
+        block.style.width = ((end - start) / totalDuration) * waveW + 'px';
+        block.textContent = segLabel(i);
+        block.title = 'click to show this section in the table';
+        lane.appendChild(block);
+        if (i < segments.length - 1) {
+            const handle = document.createElement('div');
+            handle.className = 'lane-handle';
+            handle.dataset.index = i;
+            handle.title = 'drag to move this split';
+            handle.style.left = (end / totalDuration) * waveW + 'px';
+            lane.appendChild(handle);
+        }
+        start = end;
+    });
+}
+
+function highlightSegmentRow(i) {
+    const row = document.querySelector(`.segment-row[data-index="${i}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'nearest' });
+    row.classList.add('highlight');
+    setTimeout(() => row.classList.remove('highlight'), 1200);
+}
+
 function renderSegments() {
     const container = document.getElementById('segments-container');
     container.innerHTML = '';
@@ -243,6 +350,7 @@ function renderSegments() {
             <span class="seg-start">start</span>
             <span class="seg-field">end</span>
             <span class="seg-field">speed (%)</span>
+            <span class="seg-field">vol (%)</span>
             <span class="seg-field seg-skip-col">skip</span>
         `;
         container.appendChild(header);
@@ -252,20 +360,20 @@ function renderSegments() {
     segments.forEach((seg, i) => {
         const isLast = i === segments.length - 1;
         const skipped = seg.skip;
-        const displayStart = i === 0 ? 0 : prevEnd + 0.1;
+        const displayStart = i === 0 ? 0 : prevEnd + 0.01;
         const row = document.createElement('div');
         row.className = 'segment-row' + (skipped ? ' skipped' : '');
         row.dataset.index = i;
         row.innerHTML = `
-            <span class="seg-idx">[${i + 1}]</span>
-            <span class="seg-start">${displayStart.toFixed(1)}</span>
+            <span class="seg-idx">[${segLabel(i)}]</span>
+            <span class="seg-start">${displayStart.toFixed(2)}</span>
             <span class="seg-field">
                 ${isLast
-                    ? `<span class="seg-end-static">${totalDuration.toFixed(1)}</span>`
+                    ? `<span class="seg-end-static">${totalDuration.toFixed(2)}</span>`
                     : `<button class="stepper" data-kind="end" data-step="-0.1" data-index="${i}"
                         ${skipped ? 'disabled' : ''}>&lt;</button>
                        <input type="number" class="seg-end" data-index="${i}"
-                        value="${seg.endTime !== null ? seg.endTime.toFixed(1) : ''}" placeholder="end" step="0.1"
+                        value="${seg.endTime !== null ? seg.endTime.toFixed(2) : ''}" placeholder="end" step="0.01"
                         ${skipped ? 'disabled' : ''} />
                        <button class="stepper" data-kind="end" data-step="0.1" data-index="${i}"
                         ${skipped ? 'disabled' : ''}>&gt;</button>`
@@ -278,6 +386,15 @@ function renderSegments() {
                     value="${(seg.speed * 100).toFixed(0)}"
                     min="25" max="800" step="1" ${skipped ? 'disabled' : ''} />
                 <button class="stepper" data-kind="speed" data-step="5" data-index="${i}"
+                    ${skipped ? 'disabled' : ''}>&gt;</button>
+            </span>
+            <span class="seg-field">
+                <button class="stepper" data-kind="volume" data-step="-10" data-index="${i}"
+                    ${skipped ? 'disabled' : ''}>&lt;</button>
+                <input type="number" class="seg-volume" data-index="${i}"
+                    value="${(seg.volume * 100).toFixed(0)}"
+                    min="0" max="400" step="1" ${skipped ? 'disabled' : ''} />
+                <button class="stepper" data-kind="volume" data-step="10" data-index="${i}"
                     ${skipped ? 'disabled' : ''}>&gt;</button>
             </span>
             <span class="seg-field seg-skip-col">
@@ -300,7 +417,12 @@ function renderSegments() {
         prevEnd = seg.endTime ?? totalDuration;
     });
 
+    document.getElementById('crossfade-tip').style.display =
+        segments.length > 1 ? 'block' : 'none';
+
+    renderSectionLane();
     updatePredictedDuration();
+    if (isPlaying) applyGainSchedule();
 }
 
 function addSegment() {
@@ -309,9 +431,9 @@ function addSegment() {
         return;
     }
     if (segments.length === 0) {
-        segments = [{ endTime: null, speed: 1.0, skip: false }];
+        segments = [{ endTime: null, speed: 1.0, volume: 1.0, skip: false }];
     }
-    const t = parseFloat(Math.max(0, Math.min(totalDuration, getCurrentTime())).toFixed(1));
+    const t = parseFloat(Math.max(0, Math.min(totalDuration, getCurrentTime())).toFixed(2));
     let prevEnd = 0;
     for (let j = 0; j < segments.length; j++) {
         const end = segments[j].endTime ?? totalDuration;
@@ -320,7 +442,7 @@ function addSegment() {
                 showNotification('Split must be at least 0.5s from existing boundaries.');
                 return;
             }
-            segments.splice(j, 0, { endTime: t, speed: segments[j].speed, skip: segments[j].skip });
+            segments.splice(j, 0, { endTime: t, speed: segments[j].speed, volume: segments[j].volume, skip: segments[j].skip });
             renderSegments();
             return;
         }
@@ -336,17 +458,23 @@ function mergeWithNext(i) {
     renderSegments();
 }
 
-function updateSegmentEnd(i, val) {
-    const num = parseFloat(val);
-    if (isNaN(num) || num <= 0) return;
+// Clamp a boundary time for segment i to 0.5s from its neighbours;
+// returns the rounded value, or null if the boundary cannot move.
+function clampSegmentEnd(i, t) {
     const prevBound = i === 0 ? 0 : (segments[i - 1].endTime ?? totalDuration);
     const nextBound = i >= segments.length - 1 ? totalDuration : (segments[i + 1].endTime ?? totalDuration);
     const minEnd = prevBound + 0.5;
     const maxEnd = nextBound - 0.5;
-    if (minEnd > maxEnd) return;
-    const clamped = Math.max(minEnd, Math.min(maxEnd, num));
-    const rounded = parseFloat(clamped.toFixed(1));
-    segments[i].endTime = rounded;
+    if (minEnd > maxEnd) return null;
+    return parseFloat(Math.max(minEnd, Math.min(maxEnd, t)).toFixed(2));
+}
+
+function updateSegmentEnd(i, val) {
+    const num = parseFloat(val);
+    if (isNaN(num) || num <= 0) return;
+    const clamped = clampSegmentEnd(i, num);
+    if (clamped === null) return;
+    segments[i].endTime = clamped;
     renderSegments();
 }
 
@@ -377,11 +505,39 @@ function commitSegmentSpeed(i) {
     updatePredictedDuration();
 }
 
+function updateSegmentVolume(i, val) {
+    const num = parseFloat(val);
+    if (isNaN(num)) return;
+    segments[i].volume = clampVolume(num / 100);
+    if (isPlaying) applyGainSchedule();
+}
+
+function commitSegmentVolume(i) {
+    const input = document.querySelector(`.seg-volume[data-index="${i}"]`);
+    if (!input) return;
+    const trimmed = input.value.trim();
+    if (trimmed === '') {
+        input.value = ((segments[i]?.volume ?? 1.0) * 100).toFixed(0);
+        return;
+    }
+    let num = parseFloat(trimmed);
+    if (isNaN(num)) num = 100;
+    const raw = num / 100;
+    const volume = clampVolume(raw);
+    if (volume !== raw) {
+        showNotification('Volume range: 0% to 400%');
+    }
+    segments[i].volume = volume;
+    input.value = (volume * 100).toFixed(0);
+    if (isPlaying) applyGainSchedule();
+}
+
 // ── Export ──────────────────────────────────────────────────────
 async function runAndExport() {
     const timestamps = segments.length > 0 ? segments.slice(0, -1).map(s => s.endTime ?? 0) : [];
     // speed 0 tells the backend to drop the section (process_audio skips speed-0 segments)
     const speeds = segments.length > 0 ? segments.map(s => s.skip ? 0 : s.speed) : [1.0];
+    const volumes = segments.length > 0 ? segments.map(s => s.volume) : [1.0];
     const globalSpeed = 1.0;
 
     const banner = document.getElementById('status-banner');
@@ -408,6 +564,7 @@ async function runAndExport() {
         fd.append('timestamps_str', JSON.stringify(timestamps));
         fd.append('speeds_str', JSON.stringify(speeds));
         fd.append('overall_factor', globalSpeed);
+        fd.append('volumes_str', JSON.stringify(volumes));
 
         const resp = await fetch(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
         const data = await resp.json();
@@ -490,6 +647,85 @@ document.addEventListener('DOMContentLoaded', () => {
     // Player
     document.getElementById('play-btn').addEventListener('click', togglePlay);
     document.getElementById('waveform-wrap').addEventListener('click', seekTo);
+
+    // Waveform zoom: keep the playhead anchored at its on-screen position,
+    // or keep the view centre in place when the playhead is off-screen
+    const zoomSlider = document.getElementById('zoom-slider');
+    zoomSlider.addEventListener('input', () => {
+        const inner = document.getElementById('waveform-inner');
+        const viewW = document.getElementById('waveform-wrap').clientWidth;
+        const oldWaveW = getWaveWidth();
+        const playheadX = totalDuration > 0
+            ? (getCurrentTime() / totalDuration) * oldWaveW - inner.scrollLeft
+            : 0;
+        const anchor = playheadX >= 0 && playheadX <= viewW ? playheadX : viewW / 2;
+        const anchorTime = ((inner.scrollLeft + anchor) / oldWaveW) * totalDuration;
+        waveformZoom = parseFloat(zoomSlider.value);
+        document.getElementById('zoom-value').textContent = waveformZoom.toFixed(1) + 'x';
+        if (!audioBuffer) return;
+        drawWaveform(); // resize the canvas first so the new scrollLeft is not clamped
+        renderSectionLane();
+        inner.scrollLeft = (anchorTime / totalDuration) * getWaveWidth() - anchor;
+        updatePlayheadUI();
+    });
+
+    // Section lane: scroll with the waveform
+    const waveInner = document.getElementById('waveform-inner');
+    const laneContent = document.getElementById('section-lane-content');
+    waveInner.addEventListener('scroll', () => {
+        laneContent.style.transform = `translateX(${-waveInner.scrollLeft}px)`;
+    });
+
+    // Section lane: click a block to show its row in the table
+    laneContent.addEventListener('click', e => {
+        e.stopPropagation();
+        const block = e.target.closest('.lane-block');
+        if (block) highlightSegmentRow(parseInt(block.dataset.index, 10));
+    });
+
+    // Section lane: drag a divider to move the split point
+    laneContent.addEventListener('pointerdown', e => {
+        const handle = e.target.closest('.lane-handle');
+        if (!handle) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const i = parseInt(handle.dataset.index, 10);
+        const leftBlock = laneContent.querySelector(`.lane-block[data-index="${i}"]`);
+        const rightBlock = laneContent.querySelector(`.lane-block[data-index="${i + 1}"]`);
+        const endInput = document.querySelector(`.seg-end[data-index="${i}"]`);
+        // capture the pointer: events keep arriving outside the lane, and the
+        // click fired on release targets the handle instead of the waveform
+        handle.setPointerCapture(e.pointerId);
+
+        function onMove(ev) {
+            const rect = waveInner.getBoundingClientRect();
+            const waveW = getWaveWidth();
+            const t = ((ev.clientX - rect.left + waveInner.scrollLeft) / waveW) * totalDuration;
+            const clamped = clampSegmentEnd(i, t);
+            if (clamped === null) return;
+            segments[i].endTime = clamped;
+            // move just the handle and its two blocks; full re-render on release
+            const x = (clamped / totalDuration) * waveW;
+            const leftStart = ((i === 0 ? 0 : (segments[i - 1].endTime ?? totalDuration)) / totalDuration) * waveW;
+            const rightEnd = (((segments[i + 1].endTime ?? totalDuration)) / totalDuration) * waveW;
+            handle.style.left = x + 'px';
+            leftBlock.style.width = (x - leftStart) + 'px';
+            rightBlock.style.left = x + 'px';
+            rightBlock.style.width = (rightEnd - x) + 'px';
+            if (endInput) endInput.value = clamped.toFixed(2);
+        }
+
+        function onUp() {
+            handle.removeEventListener('pointermove', onMove);
+            handle.removeEventListener('pointerup', onUp);
+            handle.removeEventListener('pointercancel', onUp);
+            renderSegments();
+        }
+
+        handle.addEventListener('pointermove', onMove);
+        handle.addEventListener('pointerup', onUp);
+        handle.addEventListener('pointercancel', onUp);
+    });
     document.addEventListener('keydown', e => {
         if (e.code === 'Space' && document.activeElement === document.body) {
             e.preventDefault();
@@ -516,6 +752,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.classList.contains('seg-speed')) {
             commitSegmentSpeed(parseInt(e.target.dataset.index, 10));
         }
+        if (e.target.classList.contains('seg-volume')) {
+            commitSegmentVolume(parseInt(e.target.dataset.index, 10));
+        }
         if (e.target.classList.contains('seg-skip')) {
             segments[parseInt(e.target.dataset.index, 10)].skip = e.target.checked;
             renderSegments();
@@ -524,6 +763,9 @@ document.addEventListener('DOMContentLoaded', () => {
     segContainer.addEventListener('input', e => {
         if (e.target.classList.contains('seg-speed')) {
             updateSegmentSpeed(parseInt(e.target.dataset.index, 10), e.target.value);
+        }
+        if (e.target.classList.contains('seg-volume')) {
+            updateSegmentVolume(parseInt(e.target.dataset.index, 10), e.target.value);
         }
     });
     segContainer.addEventListener('click', e => {
@@ -543,24 +785,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const base = isNaN(cur) ? (segments[i].speed * 100) : cur;
             input.value = Math.round(base + step);
             commitSegmentSpeed(i);
+        } else if (btn.dataset.kind === 'volume') {
+            const base = isNaN(cur) ? (segments[i].volume * 100) : cur;
+            input.value = Math.round(base + step);
+            commitSegmentVolume(i);
         } else {
             const base = isNaN(cur) ? (segments[i].endTime ?? totalDuration) : cur;
-            updateSegmentEnd(i, (base + step).toFixed(1));
+            updateSegmentEnd(i, (base + step).toFixed(2));
         }
     });
-
-    // Header greeting with typewriter effect
-    const tipEl = document.getElementById('tip-text');
-    const typeSpeed = 150;
-
-    function typeWriter(text, i) {
-        if (i < text.length) {
-            tipEl.textContent = text.slice(0, i + 1);
-            setTimeout(() => typeWriter(text, i + 1), typeSpeed);
-        }
-    }
-
-    typeWriter('Welcome to MusicLab!', 0);
 
     // ── File Handling ────────────────────────────────────────────────
     async function extractAudioOnServer(file) {
@@ -597,6 +830,9 @@ document.addEventListener('DOMContentLoaded', () => {
             totalDuration = audioBuffer.duration;
             playOffset = 0;
             isPlaying = false;
+            waveformZoom = 1;
+            document.getElementById('zoom-slider').value = 1;
+            document.getElementById('zoom-value').textContent = '1.0x';
             updatePlayUI();
 
             document.getElementById('upload-zone').style.display = 'none';
@@ -608,7 +844,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             drawWaveform();
             updatePlayheadUI();
-            segments = [{ endTime: null, speed: 1.0, skip: false }];
+            segments = [{ endTime: null, speed: 1.0, volume: 1.0, skip: false }];
             renderSegments();
         } catch (e) {
             if (ctx) ctx.close();
