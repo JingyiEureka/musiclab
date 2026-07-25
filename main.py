@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="音频变速处理 API")
 
-# 前端由本服务自己托管（同源），无需跨域配置。曾经支持双击打开 index.html
-# 的 file:// 模式，但会话 cookie 在跨域下无法工作，该模式已移除。
+# 前端由本服务自己托管（同源），无需跨域配置
 
 # 挂载前端静态资源和主页
 if os.path.exists("assets"):
@@ -102,7 +101,7 @@ def check_timestamps(values):
         if (
             not isinstance(t, (int, float))
             or isinstance(t, bool)
-            or math.isnan(t)
+            or not math.isfinite(t)
             or t <= prev
         ):
             raise HTTPException(
@@ -255,17 +254,15 @@ async def upload_audio(
     speeds_str: str = Form(..., description="JSON格式的速度，如 '[1, 0.96, 0.91]'"),
     overall_factor: float = Form(1.0, description="全局速度系数"),
     volumes_str: str = Form(None, description="JSON格式的音量，如 '[1, 0.8, 1.2]'"),
+    client_ref: str = Form(None, description="客户端生成的请求标识，重试时复用"),
 ):
-    active = sum(
-        1 for t in TASKS_DB.values() if t["status"] in ("pending", "processing")
-    )
-    if active >= MAX_ACTIVE_TASKS:
-        logger.warning("Rejected upload: %d tasks already active", active)
-        raise HTTPException(
-            status_code=429, detail="Server is busy - please try again in a minute."
-        )
-
     sid = get_session(request, response)
+
+    # 网络失败后的重试带同一个 client_ref：直接返回已创建的任务，避免重复处理
+    if client_ref:
+        for tid, task in TASKS_DB.items():
+            if task.get("client_ref") == client_ref and task.get("session") == sid:
+                return {"message": "任务已存在", "task_id": tid}
 
     # 解析 JSON 字符串为 Python 列表
     try:
@@ -310,19 +307,21 @@ async def upload_audio(
             detail=f"全局速度系数应在 {MIN_SPEED:g} 到 {MAX_SPEED:g} 之间。",
         )
 
-    # 1. 生成唯一的任务 ID
+    # 1. 检查容量并立刻注册任务。检查和注册之间没有 await，
+    #    两个并发请求不可能都通过检查（否则小服务器会被拖垮）
+    active = sum(
+        1 for t in TASKS_DB.values() if t["status"] in ("pending", "processing")
+    )
+    if active >= MAX_ACTIVE_TASKS:
+        logger.warning("Rejected upload: %d tasks already active", active)
+        raise HTTPException(
+            status_code=429, detail="Server is busy - please try again in a minute."
+        )
     task_id = str(uuid.uuid4())
-
-    # 2. 设定文件的保存路径
     input_ext = safe_ext(file.filename)
     input_filename = file.filename.rsplit(".", 1)[0]
     input_path = f"temp_uploads/{task_id}.{input_ext}"
     output_path = f"outputs/{task_id}.mp3"
-
-    # 3. 把前端传来的文件保存到硬盘
-    await save_upload(file, input_path)
-
-    # 4. 在"数据库"中注册这个任务
     TASKS_DB[task_id] = {
         "status": "pending",
         "file_url": None,
@@ -331,9 +330,17 @@ async def upload_audio(
         "original_filename": input_filename,
         "session": sid,
         "created": time.time(),
+        "client_ref": client_ref,
     }
 
-    # 5. 把真正的处理工作扔给后台，立刻放行
+    # 2. 把前端传来的文件保存到硬盘；失败就释放刚占用的任务名额
+    try:
+        await save_upload(file, input_path)
+    except HTTPException:
+        del TASKS_DB[task_id]
+        raise
+
+    # 3. 把真正的处理工作扔给后台，立刻放行
     background_tasks.add_task(
         background_audio_task,
         task_id,
@@ -346,7 +353,7 @@ async def upload_audio(
     )
     background_tasks.add_task(cleanup_stale_files)
 
-    # 6. 秒回前端，告诉它拿这个 ID 去轮询进度
+    # 4. 秒回前端，告诉它拿这个 ID 去轮询进度
     return {"message": "音频已接收，正在后台处理", "task_id": task_id}
 
 

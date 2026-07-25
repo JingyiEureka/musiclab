@@ -70,6 +70,11 @@ def process_audio(
     progress_cb, if given, is called as progress_cb(fraction, stage) where
     fraction goes 0..1 and stage is a short label like "section 2/5".
     """
+    if progress_cb is None:
+
+        def progress_cb(frac, stage):
+            pass
+
     if len(speeds) != len(timestamps) + 1:
         raise ValueError(
             f"Array length mismatch: {len(timestamps)} timestamps "
@@ -94,8 +99,7 @@ def process_audio(
     except Exception as e:
         raise AudioDecodeError(str(e)) from e
     is_stereo = y.ndim > 1
-    if progress_cb:
-        progress_cb(0.10, "loading")
+    progress_cb(0.10, "loading")
 
     sample_indices = [int(t * sr) for t in timestamps]
 
@@ -151,21 +155,19 @@ def process_audio(
         prev_i, prev_speed, prev_volume = i, speed, volume
 
         done_weight += weights[i]
-        if progress_cb:
-            progress_cb(
-                0.10 + 0.75 * done_weight / total_weight,
-                f"section {i + 1}/{len(slices)}",
-            )
+        progress_cb(
+            0.10 + 0.75 * done_weight / total_weight,
+            f"section {i + 1}/{len(slices)}",
+        )
 
     if final_audio is None:
         raise ValueError("All segments removed, nothing to export.")
 
     print("Writing output...")
-    if progress_cb:
-        progress_cb(0.85, "encoding")
+    progress_cb(0.85, "encoding")
     # RMS compensation in stretch() can push peaks past ±1, which the 16-bit
     # WAV write would hard-clip into distortion; clip explicitly instead
-    final_audio = np.clip(final_audio, -1.0, 1.0)
+    np.clip(final_audio, -1.0, 1.0, out=final_audio)
     temp_wav = f"temp_output_{uuid.uuid4().hex}.wav"
     sf.write(temp_wav, final_audio.T if is_stereo else final_audio, sr)
 
@@ -178,8 +180,7 @@ def process_audio(
             stderr=subprocess.DEVNULL,
         )
         os.remove(temp_wav)
-        if progress_cb:
-            progress_cb(1.0, "done")
+        progress_cb(1.0, "done")
         print(f"Done: {output_path}")
     except Exception as e:
         print(f"MP3 conversion failed, WAV kept at: {temp_wav}. Error: {e}")

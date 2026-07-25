@@ -86,6 +86,23 @@ def test_upload_too_large_413(monkeypatch):
     resp = upload(client, content=b"x" * 100)
     assert resp.status_code == 413
     assert set(os.listdir("temp_uploads")) == before
+    # the pre-registered task record must be released again
+    assert main.TASKS_DB == {}
+
+
+def test_client_ref_returns_same_task_on_retry():
+    client = TestClient(main.app)
+    r1 = upload(client, extra_data={"client_ref": "retry-123"})
+    r2 = upload(client, extra_data={"client_ref": "retry-123"})
+    assert r1.json()["task_id"] == r2.json()["task_id"]
+
+
+def test_client_ref_not_shared_across_sessions():
+    client_a = TestClient(main.app)
+    client_b = TestClient(main.app)
+    r1 = upload(client_a, extra_data={"client_ref": "retry-123"})
+    r2 = upload(client_b, extra_data={"client_ref": "retry-123"})
+    assert r1.json()["task_id"] != r2.json()["task_id"]
 
 
 def test_extract_too_large_413(monkeypatch):
@@ -185,6 +202,7 @@ def test_timestamps_invalid_400():
         ("[30, 10]", "[1.0, 1.0, 1.0]"),  # not ascending
         ("[10, 10]", "[1.0, 1.0, 1.0]"),  # duplicate
         ("[NaN]", "[1.0, 1.0]"),  # NaN
+        ("[1e999]", "[1.0, 1.0]"),  # Infinity
         ('["a"]', "[1.0, 1.0]"),  # string
         ("[true]", "[1.0, 1.0]"),  # bool
     ]

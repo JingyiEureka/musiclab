@@ -39,9 +39,9 @@ let isBusy = false;
 
 function setBusy(busy) {
     isBusy = busy;
-    // once the session has expired, export stays disabled regardless of busy
+    // once the session has expired, export and preview stay disabled
     document.getElementById('export-btn').disabled = busy || sessionExpired;
-    document.getElementById('preview-btn').disabled = busy;
+    document.getElementById('preview-btn').disabled = busy || sessionExpired;
     document.getElementById('audio-file-input').disabled = busy;
     document.getElementById('upload-zone').classList.toggle('disabled', busy);
 }
@@ -134,6 +134,7 @@ function expireSession() {
     if (isPlaying) pause();
     stopPet();
     document.getElementById('export-btn').disabled = true;
+    document.getElementById('preview-btn').disabled = true;
     const banner = document.getElementById('status-banner');
     clearTimeout(bannerHideTimer);
     banner.style.display = 'block';
@@ -266,11 +267,12 @@ function reportStamps() {
 }
 
 // Download as <original-name>_report_<date>_<time>.txt so repeated exports do
-// not overwrite each other and each matches its mp3. Client-side only.
-function downloadReport() {
+// not overwrite each other and each matches its mp3. The body was snapshotted
+// at submit time; only the export timestamp is stamped now.
+function downloadReport(body) {
     const stamps = reportStamps();
     const base = (audioFile ? audioFile.name : 'project').replace(/\.[^.]+$/, '');
-    const blob = new Blob([buildReportText(stamps.human)], { type: 'text/plain' });
+    const blob = new Blob([body.replace('@EXPORT_TIME@', stamps.human)], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -491,10 +493,10 @@ function applyGainSchedule() {
     }
 }
 
-async function play() {
-    // A backgrounded tab (especially iOS Safari) can leave the context
-    // suspended, interrupted, or fully closed; recover from all three so the
-    // play button still works when the user comes back.
+// A backgrounded tab (especially iOS Safari) can leave the context
+// suspended, interrupted, or fully closed; recover from all three so
+// playback still works when the user comes back.
+async function ensureAudioContext() {
     if (!audioCtx || audioCtx.state === 'closed') {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         gainNode = null;
@@ -502,6 +504,10 @@ async function play() {
     if (audioCtx.state !== 'running') {
         try { await audioCtx.resume(); } catch (e) { /* resume needs a gesture; ignore */ }
     }
+}
+
+async function play() {
+    await ensureAudioContext();
     stopPreviewPlayback();
     if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
     if (!gainNode || gainNode.context !== audioCtx) {
@@ -871,10 +877,12 @@ function audioBufferToWav(buffer, t0, t1) {
     data.setUint16(34, 16, true);
     writeStr(36, 'data');
     data.setUint32(40, frames * channels * 2, true);
+    const chans = [];
+    for (let c = 0; c < channels; c++) chans.push(buffer.getChannelData(c));
     let off = 44;
     for (let i = 0; i < frames; i++) {
         for (let c = 0; c < channels; c++) {
-            const v = Math.max(-1, Math.min(1, buffer.getChannelData(c)[start + i]));
+            const v = Math.max(-1, Math.min(1, chans[c][start + i]));
             data.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
             off += 2;
         }
@@ -926,15 +934,10 @@ function stopPreviewPlayback() {
 }
 
 async function playPreviewBytes(bytes) {
-    // the context can be closed if the tab was backgrounded while waiting
-    if (!audioCtx || audioCtx.state === 'closed') {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        gainNode = null;
-    }
-    if (audioCtx.state !== 'running') {
-        try { await audioCtx.resume(); } catch (e) { /* ignore */ }
-    }
+    await ensureAudioContext();
     const buffer = await audioCtx.decodeAudioData(bytes);
+    // the user may have resumed the original track while the render ran
+    if (isPlaying) pause();
     stopPreviewPlayback();
     previewSource = audioCtx.createBufferSource();
     previewSource.buffer = buffer;
@@ -943,10 +946,9 @@ async function playPreviewBytes(bytes) {
     previewSource.start();
 }
 
+// setBusy owns the button's disabled state; only the label changes here
 function resetPreviewUI() {
-    const btn = document.getElementById('preview-btn');
-    btn.disabled = false;
-    btn.textContent = '[ Preview ]';
+    document.getElementById('preview-btn').textContent = '[ Preview ]';
     setBusy(false);
 }
 
@@ -961,23 +963,12 @@ async function runPreview() {
         return;
     }
     if (isPlaying) pause();
-    const btn = document.getElementById('preview-btn');
-    btn.disabled = true;
-    btn.textContent = '[ Preview... ]';
+    document.getElementById('preview-btn').textContent = '[ Preview... ]';
     setBusy(true);
     try {
-        const fd = new FormData();
-        fd.append('file', audioBufferToWav(audioBuffer, w0, w1), 'preview.wav');
-        fd.append('timestamps_str', JSON.stringify(params.timestamps));
-        fd.append('speeds_str', JSON.stringify(params.speeds));
-        fd.append('overall_factor', 1.0);
-        fd.append('volumes_str', JSON.stringify(params.volumes));
-
-        const resp = await fetchWithRetry(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-
-        pollStatus(data.task_id, {
+        const wav = new File([audioBufferToWav(audioBuffer, w0, w1)], 'preview.wav', { type: 'audio/wav' });
+        const taskId = await submitJob(wav, params.timestamps, params.speeds, params.volumes);
+        pollStatus(taskId, {
             onDone: async d => {
                 try {
                     const mp3 = await fetch(CONFIG.API_BASE_URL + d.file_url);
@@ -993,9 +984,7 @@ async function runPreview() {
             },
         });
     } catch (e) {
-        showNotification(e instanceof TypeError
-            ? 'connection failed - check your network and try again.'
-            : e.message);
+        showNotification(networkErrorMessage(e));
         resetPreviewUI();
     }
 }
@@ -1015,12 +1004,37 @@ async function fetchWithRetry(url, options, retries = 2) {
     }
 }
 
+// TypeError = network-level failure; WebKit says "Load failed", Chromium
+// "Failed to fetch" - show an actionable message instead of either.
+function networkErrorMessage(e) {
+    return e instanceof TypeError
+        ? 'connection failed - check your network and try again.'
+        : 'error: ' + e.message;
+}
+
+// POST a processing job to the server; returns the task_id or throws.
+// The client_ref lets the server recognise a retried upload and return the
+// already-created task instead of processing the same job twice.
+async function submitJob(file, timestamps, speeds, volumes) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('timestamps_str', JSON.stringify(timestamps));
+    fd.append('speeds_str', JSON.stringify(speeds));
+    fd.append('overall_factor', 1.0);
+    fd.append('volumes_str', JSON.stringify(volumes));
+    fd.append('client_ref', crypto.randomUUID ? crypto.randomUUID()
+        : Date.now() + '-' + Math.random());
+    const resp = await fetchWithRetry(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    return data.task_id;
+}
+
 async function runAndExport() {
     const timestamps = segments.length > 0 ? segments.slice(0, -1).map(s => s.endTime ?? 0) : [];
     // speed 0 tells the backend to drop the section (process_audio skips speed-0 segments)
     const speeds = segments.length > 0 ? segments.map(s => s.skip ? 0 : s.speed) : [1.0];
     const volumes = segments.length > 0 ? segments.map(s => s.volume) : [1.0];
-    const globalSpeed = 1.0;
 
     const banner = document.getElementById('status-banner');
     const statusText = document.getElementById('status-text');
@@ -1041,6 +1055,13 @@ async function runAndExport() {
     }
     setBusy(true);
 
+    // Snapshot the report now so it describes exactly what was submitted,
+    // even if the user keeps editing sections while the export runs; the
+    // export timestamp is filled in when the mp3 actually arrives.
+    const reportBody = document.getElementById('export-report-check').checked
+        ? buildReportText('@EXPORT_TIME@')
+        : null;
+
     clearTimeout(bannerHideTimer);
     banner.style.display = 'block';
     banner.className = 'proc';
@@ -1048,27 +1069,13 @@ async function runAndExport() {
     startPet();
 
     try {
-        const fd = new FormData();
-        fd.append('file', audioFile);
-        fd.append('timestamps_str', JSON.stringify(timestamps));
-        fd.append('speeds_str', JSON.stringify(speeds));
-        fd.append('overall_factor', globalSpeed);
-        fd.append('volumes_str', JSON.stringify(volumes));
-
-        const resp = await fetchWithRetry(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
-
+        const taskId = await submitJob(audioFile, timestamps, speeds, volumes);
         statusText.textContent = 'processing...';
-        checkTaskProgress(data.task_id);
+        checkTaskProgress(taskId, reportBody);
     } catch (e) {
         stopPet();
         banner.className = 'fail';
-        // TypeError = network-level failure (WebKit says "Load failed",
-        // Chromium "Failed to fetch") - give an actionable message instead
-        statusText.textContent = e instanceof TypeError
-            ? 'connection failed - check your network and try again.'
-            : `error: ${e.message}`;
+        statusText.textContent = networkErrorMessage(e);
         setBusy(false);
     }
 }
@@ -1077,9 +1084,25 @@ let bannerHideTimer = null;
 
 // Poll /check-status/ until the task ends; the callbacks decide what the
 // result means (export downloads the mp3, preview plays it inline).
+// The first check fires immediately so short jobs are not stuck waiting a
+// full poll interval; a `finished` flag guarantees onDone/onFail run once
+// even if a slow response overlaps the next tick.
 function pollStatus(taskId, { onProgress, onDone, onFail }) {
     let pollFailures = 0;
-    const interval = setInterval(async () => {
+    let inFlight = false;
+    let finished = false;
+    let interval = null;
+
+    function finish(cb, arg) {
+        if (finished) return;
+        finished = true;
+        clearInterval(interval);
+        cb(arg);
+    }
+
+    async function tick() {
+        if (inFlight || finished) return;
+        inFlight = true;
         try {
             const res = await fetch(`${CONFIG.API_BASE_URL}/check-status/${taskId}`);
             const data = await res.json();
@@ -1087,28 +1110,29 @@ function pollStatus(taskId, { onProgress, onDone, onFail }) {
             pollFailures = 0;
 
             if (data.status === 'done') {
-                clearInterval(interval);
-                onDone(data);
+                finish(onDone, data);
             } else if (data.status === 'failed') {
-                clearInterval(interval);
-                onFail(ERROR_MESSAGES[data.error] || ERROR_MESSAGES.server_error);
+                finish(onFail, ERROR_MESSAGES[data.error] || ERROR_MESSAGES.server_error);
             } else if (onProgress) {
                 onProgress(data.progress);
             }
         } catch (err) {
             // a brief network blip should not kill the poll while the server
-            // is still processing; only give up after 3 failures in a row
+            // is still processing (give up after 3 in a row), but an HTTP
+            // error is a real answer - fail immediately
             pollFailures++;
-            if (pollFailures < 3) return;
-            clearInterval(interval);
-            onFail(err instanceof TypeError
-                ? 'connection failed - check your network and try again.'
-                : 'error: ' + err.message);
+            if (!(err instanceof TypeError) || pollFailures >= 3) {
+                finish(onFail, networkErrorMessage(err));
+            }
         }
-    }, CONFIG.POLLING_INTERVAL_MS);
+        inFlight = false;
+    }
+
+    tick();
+    interval = setInterval(tick, CONFIG.POLLING_INTERVAL_MS);
 }
 
-function checkTaskProgress(taskId) {
+function checkTaskProgress(taskId, reportBody) {
     const banner = document.getElementById('status-banner');
     const statusText = document.getElementById('status-text');
     pollStatus(taskId, {
@@ -1125,15 +1149,27 @@ function checkTaskProgress(taskId) {
             a.href = fileUrl;
             a.download = `musiclab_${taskId}.mp3`;
             a.click();
-            // generate the report together with the mp3 so both filenames
-            // carry (nearly) the same timestamp; stagger the second download
-            // so browsers don't flag simultaneous automatic downloads
-            if (document.getElementById('export-report-check').checked) {
-                setTimeout(downloadReport, 800);
+            // the report downloads together with the mp3 so both filenames
+            // carry (nearly) the same timestamp; staggered because browsers
+            // flag simultaneous automatic downloads, with a manual link as
+            // the fallback in case the second download is still blocked
+            if (reportBody) {
+                setTimeout(() => downloadReport(reportBody), 800);
+                const link = document.createElement('a');
+                link.href = '#';
+                link.textContent = 'report';
+                link.addEventListener('click', e => {
+                    e.preventDefault();
+                    downloadReport(reportBody);
+                });
+                statusText.append(' · ');
+                statusText.append(link);
             }
             setBusy(false);
             clearTimeout(bannerHideTimer);
-            bannerHideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
+            // keep the banner longer when it carries the report link
+            bannerHideTimer = setTimeout(() => { banner.style.display = 'none'; },
+                reportBody ? 15000 : 5000);
         },
         onFail: msg => {
             stopPet();
