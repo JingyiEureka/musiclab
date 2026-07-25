@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import math
@@ -18,7 +19,6 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -30,14 +30,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="音频变速处理 API")
 
-# 配置允许跨域请求 (CORS)，这样你直接双击打开 index.html 也能连上本地服务器了！
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 允许所有域名跨域，本地测试最方便
-    allow_credentials=True,
-    allow_methods=["*"],  # 允许所有请求方法 (GET, POST等)
-    allow_headers=["*"],
-)
+# 前端由本服务自己托管（同源），无需跨域配置。曾经支持双击打开 index.html
+# 的 file:// 模式，但会话 cookie 在跨域下无法工作，该模式已移除。
 
 # 挂载前端静态资源和主页
 if os.path.exists("assets"):
@@ -65,9 +59,12 @@ TASKS_DB = {}
 
 CLEANUP_MAX_AGE_SECONDS = 24 * 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-MAX_ACTIVE_TASKS = 3
+# One export at a time: the production box has 2 slow vCPUs and 1 GB RAM, so
+# concurrent jobs thrash CPU and swap and make every export slower.
+MAX_ACTIVE_TASKS = 1
 SESSION_COOKIE = "session"
 MAX_SPEED = 8.0  # matches the frontend clamp (800%); 0 marks a skipped section
+MIN_SPEED = 0.25  # matches the frontend clamp (25%); slower = huge CPU cost
 MAX_VOLUME = 4.0  # matches the frontend clamp (400%)
 
 
@@ -81,7 +78,7 @@ def parse_float_list(raw):
     return [float(x.strip()) for x in clean.split(",") if x.strip()]
 
 
-def check_range(values, name, max_value):
+def check_range(values, name, max_value, min_nonzero=0.0):
     # bool 是 int 的子类，json 的 true/false 也要拒绝；NaN 与任何比较都是 False
     for v in values:
         if (
@@ -90,11 +87,34 @@ def check_range(values, name, max_value):
             or math.isnan(v)
             or v < 0
             or v > max_value
+            or (0 < v < min_nonzero)
         ):
             raise HTTPException(
                 status_code=400,
                 detail=f"{name}超出范围！每个值应在 0 到 {max_value:g} 之间。",
             )
+
+
+def check_timestamps(values):
+    # 时间点必须是严格递增的正数，否则切片会静默产生重复或空白的音频
+    prev = 0.0
+    for t in values:
+        if (
+            not isinstance(t, (int, float))
+            or isinstance(t, bool)
+            or math.isnan(t)
+            or t <= prev
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="时间点必须是严格递增的正数。",
+            )
+        prev = t
+
+
+def safe_ext(filename):
+    # 扩展名只保留字母数字，防止文件名里带 / 之类的字符引发路径错误
+    return re.sub(r"[^a-zA-Z0-9]", "", filename.split(".")[-1]) or "bin"
 
 
 def get_session(request: Request, response: Response) -> str:
@@ -268,14 +288,21 @@ async def upload_audio(
             status_code=400,
             detail=f"数组长度不匹配！{len(speeds)} 个速度值应该对应 {len(speeds)} 个音量值。",
         )
-    check_range(speeds, "速度", MAX_SPEED)
+    check_timestamps(timestamps)
+    check_range(speeds, "速度", MAX_SPEED, min_nonzero=MIN_SPEED)
     check_range(volumes, "音量", MAX_VOLUME)
+    # overall_factor 在校验之后才乘进速度里，所以要单独限制范围
+    if math.isnan(overall_factor) or not (MIN_SPEED <= overall_factor <= MAX_SPEED):
+        raise HTTPException(
+            status_code=400,
+            detail=f"全局速度系数应在 {MIN_SPEED:g} 到 {MAX_SPEED:g} 之间。",
+        )
 
     # 1. 生成唯一的任务 ID
     task_id = str(uuid.uuid4())
 
     # 2. 设定文件的保存路径
-    input_ext = file.filename.split(".")[-1]
+    input_ext = safe_ext(file.filename)
     input_filename = file.filename.rsplit(".", 1)[0]
     input_path = f"temp_uploads/{task_id}.{input_ext}"
     output_path = f"outputs/{task_id}.mp3"
@@ -316,14 +343,16 @@ async def upload_audio(
 @app.post("/extract-audio/")
 async def extract_audio(file: UploadFile = File(...)):
     temp_id = str(uuid.uuid4())
-    input_ext = file.filename.split(".")[-1]
+    input_ext = safe_ext(file.filename)
     input_path = f"temp_uploads/{temp_id}.{input_ext}"
     output_path = f"temp_uploads/{temp_id}.mp3"
 
     await save_upload(file, input_path)
 
     try:
-        subprocess.run(
+        # ffmpeg 可能要跑几十秒，放到线程池里，避免阻塞整个事件循环
+        await asyncio.to_thread(
+            subprocess.run,
             ["ffmpeg", "-y", "-i", input_path, "-vn", "-q:a", "2", output_path],
             check=True,
             stdout=subprocess.DEVNULL,

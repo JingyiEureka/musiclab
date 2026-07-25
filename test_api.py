@@ -159,9 +159,38 @@ def test_volumes_bool_400():
 
 def test_speeds_out_of_range_400():
     client = TestClient(main.app)
-    for bad in ("[-1.0]", "[9.0]", "[NaN]"):
+    for bad in ("[-1.0]", "[9.0]", "[NaN]", "[0.1]"):
         resp = upload(client, extra_data={"speeds_str": bad})
         assert resp.status_code == 400
+
+
+def test_overall_factor_out_of_range_400():
+    client = TestClient(main.app)
+    for bad in ("0", "0.1", "9", "-1"):
+        resp = upload(client, extra_data={"overall_factor": bad})
+        assert resp.status_code == 400
+
+
+def test_timestamps_invalid_400():
+    client = TestClient(main.app)
+    cases = [
+        ("[-1.0]", "[1.0, 1.0]"),  # negative
+        ("[0]", "[1.0, 1.0]"),  # zero
+        ("[30, 10]", "[1.0, 1.0, 1.0]"),  # not ascending
+        ("[10, 10]", "[1.0, 1.0, 1.0]"),  # duplicate
+        ("[NaN]", "[1.0, 1.0]"),  # NaN
+        ('["a"]', "[1.0, 1.0]"),  # string
+        ("[true]", "[1.0, 1.0]"),  # bool
+    ]
+    for ts, sp in cases:
+        resp = upload(client, extra_data={"timestamps_str": ts, "speeds_str": sp})
+        assert resp.status_code == 400, f"timestamps {ts} should be rejected"
+
+
+def test_weird_filename_extension_still_works():
+    client = TestClient(main.app)
+    resp = upload(client, filename="song.mp3/../oops")
+    assert resp.status_code == 200
 
 
 def test_speed_zero_skip_marker_allowed():

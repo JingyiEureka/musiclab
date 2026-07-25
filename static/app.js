@@ -1,6 +1,7 @@
 // ── Configuration ──────────────────────────────────────────────
 const CONFIG = {
-    API_BASE_URL: window.location.protocol === 'file:' ? 'http://127.0.0.1:8000' : '',
+    // the page is always served by the API itself, so requests are same-origin
+    API_BASE_URL: '',
     POLLING_INTERVAL_MS: 2000,
     MAX_UPLOAD_BYTES: 50 * 1024 * 1024,
     WAVEFORM_COLOR_PLAYED: '#d4a0b5',
@@ -166,12 +167,18 @@ function hideResumeModal() {
 async function restoreSession(saved) {
     hideResumeModal();
     setBusy(true);
+    let ctx;
     try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        audioBuffer = await ctx.decodeAudioData(await saved.blob.arrayBuffer());
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        // Read the stored blob into memory once and build the upload File from
+        // those bytes: WebKit (all iPhone browsers) can fail to POST a File
+        // still backed by IndexedDB blob storage with a generic "Load failed".
+        const bytes = await saved.blob.arrayBuffer();
+        const upload = new File([bytes], saved.filename, { type: saved.blob.type });
+        audioBuffer = await ctx.decodeAudioData(bytes);
         if (audioCtx) audioCtx.close();
         audioCtx = ctx;
-        audioFile = new File([saved.blob], saved.filename, { type: saved.blob.type });
+        audioFile = upload;
         totalDuration = audioBuffer.duration;
         playOffset = 0;
         isPlaying = false;
@@ -181,6 +188,7 @@ async function restoreSession(saved) {
         revealEditor(saved.filename);
         armExpiry(sessionSavedAt);
     } catch (e) {
+        if (ctx) ctx.close();
         await idbClear().catch(() => {});
         showUploadError('Could not restore your previous session - please re-upload.');
     } finally {
@@ -266,7 +274,8 @@ function downloadReport() {
     a.href = url;
     a.download = base + '_report_' + stamps.file + '.txt';
     a.click();
-    URL.revokeObjectURL(url);
+    // revoking synchronously can abort the download in some browsers
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function showUploadError(msg) {
@@ -794,6 +803,20 @@ function commitSegmentVolume(i) {
 }
 
 // ── Export ──────────────────────────────────────────────────────
+// fetch() rejects with TypeError only when the request died at the network
+// level (no HTTP response at all) - a phone radio waking from idle or a
+// wifi/cellular handoff. Those are safe to retry; anything else is rethrown.
+async function fetchWithRetry(url, options, retries = 2) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await fetch(url, options);
+        } catch (e) {
+            if (!(e instanceof TypeError) || attempt >= retries) throw e;
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        }
+    }
+}
+
 async function runAndExport() {
     const timestamps = segments.length > 0 ? segments.slice(0, -1).map(s => s.endTime ?? 0) : [];
     // speed 0 tells the backend to drop the section (process_audio skips speed-0 segments)
@@ -838,7 +861,7 @@ async function runAndExport() {
         fd.append('overall_factor', globalSpeed);
         fd.append('volumes_str', JSON.stringify(volumes));
 
-        const resp = await fetch(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
+        const resp = await fetchWithRetry(`${CONFIG.API_BASE_URL}/upload-audio/`, { method: 'POST', body: fd });
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
 
@@ -846,8 +869,10 @@ async function runAndExport() {
         checkTaskProgress(data.task_id);
     } catch (e) {
         banner.className = 'fail';
-        statusText.textContent = e.message.includes('fetch') || e.message.includes('Failed')
-            ? 'error: cannot connect to server (run: uvicorn main:app --port 8000)'
+        // TypeError = network-level failure (WebKit says "Load failed",
+        // Chromium "Failed to fetch") - give an actionable message instead
+        statusText.textContent = e instanceof TypeError
+            ? 'connection failed - check your network and try again.'
             : `error: ${e.message}`;
         setBusy(false);
     }
@@ -858,12 +883,14 @@ let bannerHideTimer = null;
 function checkTaskProgress(taskId) {
     const banner = document.getElementById('status-banner');
     const statusText = document.getElementById('status-text');
+    let pollFailures = 0;
 
     const interval = setInterval(async () => {
         try {
             const res = await fetch(`${CONFIG.API_BASE_URL}/check-status/${taskId}`);
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+            pollFailures = 0;
 
             if (data.status === 'processing') {
                 statusText.textContent = 'processing...';
@@ -886,9 +913,15 @@ function checkTaskProgress(taskId) {
                 setBusy(false);
             }
         } catch (err) {
+            // a brief network blip should not kill the poll while the server
+            // is still processing; only give up after 3 failures in a row
+            pollFailures++;
+            if (pollFailures < 3) return;
             clearInterval(interval);
             banner.className = 'fail';
-            statusText.textContent = 'error: ' + err.message;
+            statusText.textContent = err instanceof TypeError
+                ? 'connection failed - check your network and try again.'
+                : 'error: ' + err.message;
             setBusy(false);
         }
     }, CONFIG.POLLING_INTERVAL_MS);

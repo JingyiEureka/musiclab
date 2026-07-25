@@ -219,3 +219,14 @@ class TestProcessAudioVolume:
         )
         result, _ = librosa.load(output_path, sr=None)
         assert np.max(np.abs(result)) <= 1.05  # mp3 encoding overshoot tolerance
+
+    def test_stretch_gain_does_not_clip_output(self, tmp_path):
+        # RMS compensation after a stretch can push peaks past 1.0 on
+        # already-loud input; the output must be clipped back to valid range
+        input_path = str(tmp_path / "in.wav")
+        output_path = str(tmp_path / "out.mp3")
+        self.write_sine_wav(input_path, amplitude=0.99)
+
+        process_audio(input_path, output_path, timestamps=[], speeds=[0.7])
+        result, _ = librosa.load(output_path, sr=None)
+        assert np.max(np.abs(result)) <= 1.05  # mp3 encoding overshoot tolerance

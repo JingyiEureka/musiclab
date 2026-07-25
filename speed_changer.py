@@ -135,6 +135,9 @@ def process_audio(
         raise ValueError("All segments removed, nothing to export.")
 
     print("Writing output...")
+    # RMS compensation in stretch() can push peaks past ±1, which the 16-bit
+    # WAV write would hard-clip into distortion; clip explicitly instead
+    final_audio = np.clip(final_audio, -1.0, 1.0)
     temp_wav = f"temp_output_{uuid.uuid4().hex}.wav"
     sf.write(temp_wav, final_audio.T if is_stereo else final_audio, sr)
 
