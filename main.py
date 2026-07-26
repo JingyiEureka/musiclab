@@ -42,7 +42,9 @@ if os.path.exists("static"):
 @app.get("/")
 async def serve_index(request: Request):
     if os.path.exists("index.html"):
-        response = FileResponse("index.html")
+        # always revalidate the page itself, otherwise a cached copy keeps
+        # pointing at old ?v= asset versions after a deploy
+        response = FileResponse("index.html", headers={"Cache-Control": "no-cache"})
         get_session(request, response)
         return response
     return {"message": "index.html not found"}
