@@ -1,4 +1,4 @@
-# TempoTailor Project Instructions
+# MusicLab Project Instructions
 
 ## Before committing
 

@@ -1,12 +1,14 @@
-# TempoTailor — Music Speed Changer
+# MusicLab — Music Speed Changer
 
 Slice audio (or video) at arbitrary timestamps, adjust each section's speed and volume independently, and export as MP3.
 
 ```
 ╔══════════════════════════════════╗
-║     T E M P O T A I L O R       ║
+║        M U S I C L A B          ║
 ╚══════════════════════════════════╝
 ```
+
+Architecture diagrams and known trade-offs: see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## CLI
 
