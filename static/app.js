@@ -171,6 +171,7 @@ async function restoreSession(saved) {
     hideResumeModal();
     setBusy(true);
     setUploadLoading(true);
+    const loadStart = performance.now();
     let ctx;
     try {
         ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -189,6 +190,7 @@ async function restoreSession(saved) {
         waveformZoom = saved.waveformZoom || 1;
         segments = saved.segments || [];
         sessionSavedAt = saved.savedAt || Date.now();
+        await loadingHold(loadStart);
         revealEditor(saved.filename);
         armExpiry(sessionSavedAt);
     } catch (e) {
@@ -340,6 +342,15 @@ function setUploadLoading(loading) {
     document.getElementById('upload-hint').textContent =
         loading ? 'loading your file...' : 'Drop or select audio / video';
     if (loading) startPet('upload-pet'); else stopPet();
+}
+
+// Fast decodes would flash the loading pet for a single frame, which looks
+// like a glitch; hold it briefly so the state change is perceivable.
+const MIN_LOADING_MS = 600;
+
+function loadingHold(t0) {
+    const remain = MIN_LOADING_MS - (performance.now() - t0);
+    return remain > 0 ? new Promise(r => setTimeout(r, remain)) : Promise.resolve();
 }
 
 function renderProgress(progress) {
@@ -1078,12 +1089,11 @@ async function runAndExport() {
     clearTimeout(bannerHideTimer);
     banner.style.display = 'block';
     banner.className = 'proc';
-    statusText.textContent = 'uploading...';
+    statusText.textContent = 'processing...';
     startPet();
 
     try {
         const taskId = await submitJob(audioFile, timestamps, speeds, volumes);
-        statusText.textContent = 'processing...';
         checkTaskProgress(taskId, reportBody);
     } catch (e) {
         stopPet();
@@ -1416,6 +1426,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         setBusy(true);
         setUploadLoading(true);
+        const loadStart = performance.now();
         let ctx;
         try {
             ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1435,6 +1446,7 @@ document.addEventListener('DOMContentLoaded', () => {
             isPlaying = false;
             waveformZoom = 1;
             segments = [{ endTime: null, speed: 1.0, volume: 1.0, skip: false }];
+            await loadingHold(loadStart);
             revealEditor(file.name);
             saveBlob(audioFile);
             saveMeta();
