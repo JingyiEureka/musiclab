@@ -170,6 +170,7 @@ function hideResumeModal() {
 async function restoreSession(saved) {
     hideResumeModal();
     setBusy(true);
+    setUploadLoading(true);
     let ctx;
     try {
         ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -195,6 +196,7 @@ async function restoreSession(saved) {
         await idbClear().catch(() => {});
         showUploadError('Could not restore your previous session - please re-upload.');
     } finally {
+        setUploadLoading(false);
         setBusy(false);
     }
 }
@@ -309,15 +311,16 @@ const PET_FRAMES = [
     ' /\\_/\\  .♫ \nd( ^.^ )b',
 ];
 let petTimer = null;
+let petEl = null;
 
-function startPet() {
-    const el = document.getElementById('pet-frame');
-    el.style.display = 'block';
-    el.textContent = PET_FRAMES[0];
+function startPet(elId = 'pet-frame') {
+    petEl = document.getElementById(elId);
+    petEl.style.display = 'block';
+    petEl.textContent = PET_FRAMES[0];
     let i = 1;
     clearInterval(petTimer);
     petTimer = setInterval(() => {
-        el.textContent = PET_FRAMES[i % PET_FRAMES.length];
+        petEl.textContent = PET_FRAMES[i % PET_FRAMES.length];
         i++;
     }, 500);
 }
@@ -325,8 +328,18 @@ function startPet() {
 function stopPet() {
     clearInterval(petTimer);
     petTimer = null;
-    document.getElementById('pet-frame').style.display = 'none';
+    if (petEl) petEl.style.display = 'none';
+    petEl = null;
     document.getElementById('progress-line').textContent = '';
+}
+
+// Loading state inside the upload zone, used while a file is being read
+// and decoded (which can take a while for big files) so the zone does not
+// just look frozen.
+function setUploadLoading(loading) {
+    document.getElementById('upload-hint').textContent =
+        loading ? 'loading your file...' : 'Drop or select audio / video';
+    if (loading) startPet('upload-pet'); else stopPet();
 }
 
 function renderProgress(progress) {
@@ -1402,6 +1415,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         setBusy(true);
+        setUploadLoading(true);
         let ctx;
         try {
             ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1437,6 +1451,7 @@ document.addEventListener('DOMContentLoaded', () => {
             totalDuration = 0;
             showUploadError('Could not load this file - try a different one or convert it to MP3/WAV.');
         } finally {
+            setUploadLoading(false);
             setBusy(false);
         }
     }

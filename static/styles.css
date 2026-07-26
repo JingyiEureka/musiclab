@@ -96,9 +96,22 @@ header pre {
     cursor: pointer;
 }
 
+/* dim the hint but keep the loading pet at full brightness */
 .upload-zone.disabled {
-    opacity: 0.5;
     pointer-events: none;
+}
+
+.upload-zone.disabled .hint {
+    opacity: 0.5;
+}
+
+#upload-pet {
+    display: none;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: bold;
+    line-height: 1.3;
+    margin-top: 10px;
 }
 
 .upload-error {
