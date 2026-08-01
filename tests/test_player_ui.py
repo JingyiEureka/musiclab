@@ -3,16 +3,18 @@
 import os
 import re
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+STATIC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
+)
 
 
 def read_html():
-    with open(os.path.join(HERE, "index.html"), "r") as f:
+    with open(os.path.join(STATIC, "index.html"), "r") as f:
         return f.read()
 
 
 def read_css():
-    with open(os.path.join(HERE, "static", "styles.css"), "r") as f:
+    with open(os.path.join(STATIC, "styles.css"), "r") as f:
         return f.read()
 
 

@@ -168,7 +168,12 @@ def process_audio(
     # RMS compensation in stretch() can push peaks past ±1, which the 16-bit
     # WAV write would hard-clip into distortion; clip explicitly instead
     np.clip(final_audio, -1.0, 1.0, out=final_audio)
-    temp_wav = f"temp_output_{uuid.uuid4().hex}.wav"
+    # keep the intermediate next to the final file, so it lands in outputs/ for
+    # the server (where cleanup sweeps it) instead of whatever the cwd happens to be
+    temp_wav = os.path.join(
+        os.path.dirname(os.path.abspath(output_path)),
+        f"temp_output_{uuid.uuid4().hex}.wav",
+    )
     sf.write(temp_wav, final_audio.T if is_stereo else final_audio, sr)
 
     print(f"Encoding to MP3: {output_path} ...")
@@ -192,7 +197,9 @@ if __name__ == "__main__":
     segment_speeds = [1, 0.84, 1]
     global_slowdown = 1.0
 
-    input_file = "./assets/kitri.mp3"
+    # assets/ is not tracked in git; point this at a file of your own
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    input_file = os.path.join(repo_root, "assets", "kitri.mp3")
     input_name = os.path.basename(input_file).rsplit(".", 1)[0]
     speed_strs = [str(int(s * global_slowdown * 100)) for s in segment_speeds]
     output_file = f"{input_name}_{'_'.join(speed_strs)}.mp3"

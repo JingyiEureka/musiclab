@@ -8,6 +8,7 @@ import subprocess
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import (
     BackgroundTasks,
@@ -23,36 +24,45 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from speed_changer import AudioDecodeError, process_audio
+from app.speed_changer import AudioDecodeError, process_audio
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+# All paths are anchored to the repo root rather than the working directory,
+# so the server behaves the same however it is launched.
+BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / "static"
+ASSETS_DIR = BASE_DIR / "assets"
+TEMP_DIR = BASE_DIR / "temp_uploads"
+OUTPUT_DIR = BASE_DIR / "outputs"
+INDEX_HTML = STATIC_DIR / "index.html"
 
 app = FastAPI(title="音频变速处理 API")
 
 # 前端由本服务自己托管（同源），无需跨域配置
 
 # 挂载前端静态资源和主页
-if os.path.exists("assets"):
-    app.mount("/assets", StaticFiles(directory="assets"), name="assets")
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/")
 async def serve_index(request: Request):
-    if os.path.exists("index.html"):
+    if INDEX_HTML.exists():
         # always revalidate the page itself, otherwise a cached copy keeps
         # pointing at old ?v= asset versions after a deploy
-        response = FileResponse("index.html", headers={"Cache-Control": "no-cache"})
+        response = FileResponse(INDEX_HTML, headers={"Cache-Control": "no-cache"})
         get_session(request, response)
         return response
     return {"message": "index.html not found"}
 
 
 # Ensure temp and output directories exist
-os.makedirs("temp_uploads", exist_ok=True)
-os.makedirs("outputs", exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 模拟一个极简的数据库，用来存储任务状态
 # 格式: {"task_id": {"status": "pending" | "processing" | "done" | "failed", "file_url": "..."}}
@@ -133,6 +143,17 @@ def get_owned_task(task_id: str, request: Request) -> dict:
     return task
 
 
+# The frontend is a set of ES modules importing each other by URL, so a ?v=
+# query string on the entry point cannot bust the rest. Make them revalidate
+# instead: cheap 304s, and no version bump to remember on deploy.
+@app.middleware("http")
+async def revalidate_js_modules(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/js/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # Starlette parses the whole multipart body before the handler runs, so
 # save_upload alone cannot stop an oversized request; reject by header first.
 @app.middleware("http")
@@ -163,12 +184,12 @@ def cleanup_stale_files():
     cutoff = time.time() - CLEANUP_MAX_AGE_SECONDS
     candidates = [
         os.path.join(folder, name)
-        for folder in ("outputs", "temp_uploads")
+        for folder in (OUTPUT_DIR, TEMP_DIR)
         for name in os.listdir(folder)
     ]
     candidates += [
-        name
-        for name in os.listdir(".")
+        str(BASE_DIR / name)
+        for name in os.listdir(BASE_DIR)
         if name.startswith("temp_output_") and name.endswith(".wav")
     ]
     for path in candidates:
@@ -322,8 +343,8 @@ async def upload_audio(
     task_id = str(uuid.uuid4())
     input_ext = safe_ext(file.filename)
     input_filename = file.filename.rsplit(".", 1)[0]
-    input_path = f"temp_uploads/{task_id}.{input_ext}"
-    output_path = f"outputs/{task_id}.mp3"
+    input_path = str(TEMP_DIR / f"{task_id}.{input_ext}")
+    output_path = str(OUTPUT_DIR / f"{task_id}.mp3")
     TASKS_DB[task_id] = {
         "status": "pending",
         "file_url": None,
@@ -366,8 +387,8 @@ async def upload_audio(
 async def extract_audio(file: UploadFile = File(...)):
     temp_id = str(uuid.uuid4())
     input_ext = safe_ext(file.filename)
-    input_path = f"temp_uploads/{temp_id}.{input_ext}"
-    output_path = f"temp_uploads/{temp_id}.mp3"
+    input_path = str(TEMP_DIR / f"{temp_id}.{input_ext}")
+    output_path = str(TEMP_DIR / f"{temp_id}.mp3")
 
     await save_upload(file, input_path)
 
@@ -415,7 +436,7 @@ async def check_status(task_id: str, request: Request):
 async def download_audio(task_id: str, request: Request):
     task = get_owned_task(task_id, request)
 
-    file_path = f"outputs/{task_id}.mp3"
+    file_path = str(OUTPUT_DIR / f"{task_id}.mp3")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="文件尚未生成或已丢失")
 

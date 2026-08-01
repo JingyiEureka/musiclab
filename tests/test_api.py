@@ -4,8 +4,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-import main
-from speed_changer import AudioDecodeError
+from app import main
+from app.speed_changer import AudioDecodeError
 
 
 def fake_process_audio(
@@ -27,7 +27,7 @@ def clean_tasks(monkeypatch):
     monkeypatch.setattr(main, "process_audio", fake_process_audio)
     yield
     for task_id in main.TASKS_DB:
-        path = f"outputs/{task_id}.mp3"
+        path = main.OUTPUT_DIR / f"{task_id}.mp3"
         if os.path.exists(path):
             os.remove(path)
     main.TASKS_DB.clear()
@@ -82,10 +82,10 @@ def test_download_bad_task_id_404():
 def test_upload_too_large_413(monkeypatch):
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 10)
     client = TestClient(main.app)
-    before = set(os.listdir("temp_uploads"))
+    before = set(os.listdir(main.TEMP_DIR))
     resp = upload(client, content=b"x" * 100)
     assert resp.status_code == 413
-    assert set(os.listdir("temp_uploads")) == before
+    assert set(os.listdir(main.TEMP_DIR)) == before
     # the pre-registered task record must be released again
     assert main.TASKS_DB == {}
 

@@ -8,7 +8,7 @@ around librosa and ffmpeg.
 
 ```mermaid
 flowchart LR
-    subgraph Browser["Browser (static/app.js)"]
+    subgraph Browser["Browser (static/js/)"]
         UP[Upload zone<br/>drag and drop]
         WF[Waveform player<br/>canvas + zoom + section lane]
         SEG[Section editor<br/>speed / volume / split / merge]
@@ -16,8 +16,8 @@ flowchart LR
         IDB[(IndexedDB<br/>session restore)]
     end
 
-    subgraph Server["FastAPI (main.py)"]
-        IDX["GET /<br/>index.html, no-cache"]
+    subgraph Server["FastAPI (app/main.py)"]
+        IDX["GET /<br/>static/index.html, no-cache"]
         UPL["POST /upload-audio/<br/>validate, cap = 1 job"]
         EXT["POST /extract-audio/<br/>video to mp3"]
         ST["GET /check-status/:id"]
@@ -26,7 +26,7 @@ flowchart LR
         BG[background_audio_task]
     end
 
-    subgraph Core["speed_changer.py"]
+    subgraph Core["app/speed_changer.py"]
         PA["process_audio<br/>load, slice, stretch,<br/>crossfade, encode"]
     end
 
@@ -52,8 +52,8 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant FE as app.js
-    participant API as main.py
+    participant FE as static/js/
+    participant API as app/main.py
     participant W as background task
     participant SC as process_audio
 
@@ -81,25 +81,27 @@ sequenceDiagram
 Findings from a code review on 2026-07-26. All are minor at the current
 scale; listed so they are not rediscovered from scratch.
 
-1. **Task-slot leak on unexpected upload failure** (`main.py`, upload step 2).
+1. **Task-slot leak on unexpected upload failure** (`app/main.py`, upload step 2).
    If `save_upload` raises anything other than `HTTPException` (for example a
    disk error), the `except HTTPException` block does not fire, so the
    pending task record stays in `TASKS_DB` and occupies the single job slot
    for up to 24 hours, blocking all exports until cleanup. Catching
    `Exception` there would be safer.
 
-2. **No concurrency cap on `/extract-audio/`** (`main.py`). Unlike
+2. **No concurrency cap on `/extract-audio/`** (`app/main.py`). Unlike
    `/upload-audio/`, video extraction is not limited, so several
    simultaneous ffmpeg processes could run on the 2-vCPU / 1 GB production
    box.
 
-3. **In-memory task state** (`TASKS_DB` in `main.py`). A container restart
+3. **In-memory task state** (`TASKS_DB` in `app/main.py`). A container restart
    forgets in-flight jobs; clients polling an old task get 404. Accepted
    trade-off for a single-worker deployment.
 
-4. **Mixed logging styles**. `speed_changer.py` uses `print` while `main.py`
-   uses `logging`, so container logs are inconsistent in format.
+4. **Mixed logging styles**. `app/speed_changer.py` uses `print` while
+   `app/main.py` uses `logging`, so container logs are inconsistent in format.
 
-5. **Single large frontend file**. `static/app.js` (~1470 lines) holds the
-   player, section editor, persistence, and export/poll code. Still
-   navigable, but worth splitting if it keeps growing.
+5. **Shared mutable frontend state**. The ES modules under `static/js/` pass
+   state through one exported `state` object (`state.js`) rather than through
+   arguments. It keeps the module graph acyclic and the split small, but any
+   module can write any field, so the data flow is not enforced by the
+   structure.

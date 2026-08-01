@@ -9,8 +9,8 @@ archive
 assets
 *.mp3
 .DS_Store
-test_speed_changer.py
-test_player_ui.py
+tests
 README.md
+ARCHITECTURE.md
 CLAUDE.md
 .claude

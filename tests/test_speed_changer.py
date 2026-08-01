@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from speed_changer import crossfade, process_audio, stretch
+from app.speed_changer import crossfade, process_audio, stretch
 
 
 def make_sine(duration_sec, sr=22050, freq=440.0):
@@ -146,7 +146,7 @@ class TestSeamJoining:
         np.testing.assert_allclose(result, audio, atol=1e-3)
 
     def test_equal_stretched_speeds_keep_crossfade(self, tmp_path, monkeypatch):
-        import speed_changer
+        from app import speed_changer
 
         sr = 22050
         audio = make_sine(2.0, sr)

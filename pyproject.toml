@@ -1,0 +1,12 @@
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+# so tests can `import app` without installing the project
+pythonpath = ["."]
+testpaths = ["tests"]
