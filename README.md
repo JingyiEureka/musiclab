@@ -19,6 +19,8 @@ python3 speed_changer.py
 
 Edit `cut_timestamps`, `segment_speeds`, and `input_file` in the `__main__` block at the bottom of `speed_changer.py`.
 
+`input_file` defaults to `./assets/kitri.mp3`. The `assets/` folder holds local sample media and is not tracked in git, so point `input_file` at a file of your own after cloning.
+
 ## Web App
 
 ```
