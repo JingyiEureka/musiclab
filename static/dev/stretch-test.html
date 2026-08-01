@@ -1,0 +1,211 @@
+<!doctype html>
+<!-- Dev harness for the client-side stretch engine. Not part of the app. -->
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>stretch engine test</title>
+    <style>
+        body { font-family: ui-monospace, monospace; margin: 2rem; max-width: 60rem; }
+        table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 0.35rem 0.6rem; text-align: left; }
+        th { background: #f2f2f2; }
+        .pass { color: #0a0; font-weight: bold; }
+        .fail { color: #c00; font-weight: bold; }
+        #log { white-space: pre-wrap; background: #f8f8f8; padding: 0.75rem; }
+    </style>
+</head>
+<body>
+<h1>stretch engine test</h1>
+<p>Signalsmith Stretch via OfflineAudioContext. Run this served over HTTP
+(<code>/static/dev/stretch-test.html</code>), not from file://.</p>
+
+<button id="run">run sine tests</button>
+<button id="play">play last render</button>
+<button id="save">download last render (wav)</button>
+
+<div id="results"></div>
+<div id="log"></div>
+
+<h2>real file</h2>
+<p>Pick an audio file to stretch at the rate below and download the result.</p>
+<input type="file" id="file" accept="audio/*,video/*" />
+<label>rate <input type="number" id="rate" value="0.84" step="0.01" min="0.05" style="width:5rem" /></label>
+<span id="filestatus"></span>
+
+<script type="module">
+import { renderStretched, stretchedDuration, PRESET_EXPORT } from '../js/stretch.js';
+import { audioBufferToWav, downloadBlob } from '../js/wav.js';
+
+const logEl = document.getElementById('log');
+const log = m => { logEl.textContent += m + '\n'; };
+let lastRender = null;
+
+// ── measurement helpers ─────────────────────────────────────────
+// Zero-crossing frequency estimate. Accurate for a clean sine, which is all
+// we feed it, and needs no FFT.
+function estimateFreq(data, sr, from, to) {
+    let crossings = 0;
+    for (let i = from + 1; i < to; i++) {
+        if ((data[i - 1] < 0 && data[i] >= 0) || (data[i - 1] >= 0 && data[i] < 0)) crossings++;
+    }
+    return crossings / 2 / ((to - from) / sr);
+}
+
+function rms(data, from, to) {
+    let sum = 0;
+    for (let i = from; i < to; i++) sum += data[i] * data[i];
+    return Math.sqrt(sum / Math.max(1, to - from));
+}
+
+function onsetSeconds(data, sr, threshold = 0.02) {
+    for (let i = 0; i < data.length; i++) if (Math.abs(data[i]) > threshold) return i / sr;
+    return null;
+}
+
+function peak(data) {
+    let p = 0;
+    for (let i = 0; i < data.length; i++) p = Math.max(p, Math.abs(data[i]));
+    return p;
+}
+
+function hasNaN(data) {
+    for (let i = 0; i < data.length; i++) if (!Number.isFinite(data[i])) return true;
+    return false;
+}
+
+// ── test signal ─────────────────────────────────────────────────
+function sineBuffer({ freq = 440, seconds = 2, sr = 48000, channels = 2, amp = 0.5 }) {
+    const ctx = new OfflineAudioContext(channels, Math.ceil(seconds * sr), sr);
+    const buf = ctx.createBuffer(channels, Math.ceil(seconds * sr), sr);
+    for (let c = 0; c < channels; c++) {
+        const d = buf.getChannelData(c);
+        for (let i = 0; i < d.length; i++) d[i] = amp * Math.sin(2 * Math.PI * freq * i / sr);
+    }
+    return buf;
+}
+
+// ── the tests ───────────────────────────────────────────────────
+const CASES = [
+    { rate: 1.0, note: 'passthrough' },
+    { rate: 0.84, note: 'typical slowdown (in quality band)' },
+    { rate: 0.70, note: 'edge of quality band' },
+    { rate: 0.50, note: 'outside quality band (Esmeralda case)' },
+    { rate: 1.08, note: 'typical speedup' },
+];
+
+const FREQ = 440, SECONDS = 2, SR = 48000;
+
+async function runTests() {
+    logEl.textContent = '';
+    const rows = [];
+    const source = sineBuffer({ freq: FREQ, seconds: SECONDS, sr: SR });
+
+    for (const c of CASES) {
+        const expected = stretchedDuration(SECONDS, c.rate);
+        let row = { rate: c.rate, note: c.note, expected };
+        try {
+            const t0 = performance.now();
+            const out = await renderStretched(source, c.rate, { preset: PRESET_EXPORT });
+            row.ms = Math.round(performance.now() - t0);
+            lastRender = out;
+
+            const d = out.getChannelData(0);
+            // measure in the middle, away from fade-in/out edges
+            const from = Math.floor(0.25 * out.length);
+            const to = Math.floor(0.75 * out.length);
+            row.actual = out.duration;
+            row.freq = estimateFreq(d, out.sampleRate, from, to);
+            row.rms = rms(d, from, to);
+            row.onset = onsetSeconds(d, out.sampleRate);
+            row.peak = peak(d);
+            row.nan = hasNaN(d);
+
+            const durOk = Math.abs(row.actual - expected) / expected < 0.02;
+            const freqOk = Math.abs(row.freq - FREQ) / FREQ < 0.02;
+            const levelOk = row.rms > 0.1 && !row.nan && row.peak <= 1.001;
+            row.pass = durOk && freqOk && levelOk;
+            row.detail = [
+                durOk ? null : 'duration',
+                freqOk ? null : 'pitch',
+                levelOk ? null : 'level/nan/clip',
+            ].filter(Boolean).join(', ') || 'ok';
+        } catch (e) {
+            row.pass = false;
+            row.detail = 'threw: ' + e.message;
+            log('ERROR rate=' + c.rate + ': ' + (e.stack || e.message));
+        }
+        rows.push(row);
+    }
+
+    render(rows);
+    const onsets = rows.filter(r => r.onset != null).map(r => r.onset);
+    if (onsets.length) {
+        log('onset offsets (s): ' + onsets.map(o => o.toFixed(4)).join(', '));
+        log('If these are consistently > ~0.001s the render needs latency trimming.');
+    }
+    return rows;
+}
+
+// let a headless runner drive the same tests
+window.runStretchTests = runTests;
+
+function render(rows) {
+    const fmt = (v, n = 3) => (typeof v === 'number' ? v.toFixed(n) : '-');
+    document.getElementById('results').innerHTML = `
+        <table>
+            <tr><th>rate</th><th>case</th><th>expected s</th><th>actual s</th>
+                <th>freq Hz</th><th>rms</th><th>peak</th><th>onset s</th>
+                <th>ms</th><th>result</th></tr>
+            ${rows.map(r => `<tr>
+                <td>${r.rate}</td><td>${r.note}</td>
+                <td>${fmt(r.expected)}</td><td>${fmt(r.actual)}</td>
+                <td>${fmt(r.freq, 1)}</td><td>${fmt(r.rms)}</td><td>${fmt(r.peak)}</td>
+                <td>${fmt(r.onset, 4)}</td><td>${r.ms ?? '-'}</td>
+                <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'} ${r.detail}</td>
+            </tr>`).join('')}
+        </table>`;
+}
+
+document.getElementById('run').addEventListener('click', runTests);
+
+document.getElementById('play').addEventListener('click', async () => {
+    if (!lastRender) return log('nothing rendered yet');
+    const ctx = new AudioContext();
+    await ctx.resume();
+    const src = ctx.createBufferSource();
+    src.buffer = lastRender;
+    src.connect(ctx.destination);
+    src.start();
+});
+
+document.getElementById('save').addEventListener('click', () => {
+    if (!lastRender) return log('nothing rendered yet');
+    downloadBlob(audioBufferToWav(lastRender), 'stretch-test.wav');
+});
+
+document.getElementById('file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = document.getElementById('filestatus');
+    const rate = parseFloat(document.getElementById('rate').value) || 1;
+    status.textContent = ' decoding...';
+    try {
+        const ctx = new AudioContext();
+        const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+        status.textContent = ` ${buf.duration.toFixed(1)}s / ${buf.numberOfChannels}ch / ${buf.sampleRate}Hz - rendering...`;
+        const t0 = performance.now();
+        const out = await renderStretched(buf, rate, { preset: PRESET_EXPORT });
+        const ms = Math.round(performance.now() - t0);
+        lastRender = out;
+        status.textContent = ` rendered ${out.duration.toFixed(1)}s in ${ms}ms (${(buf.duration / (ms / 1000)).toFixed(1)}x realtime)`;
+        log(`file: ${file.name} rate=${rate} in=${buf.duration.toFixed(2)}s out=${out.duration.toFixed(2)}s ${ms}ms`);
+        downloadBlob(audioBufferToWav(out), file.name.replace(/\.[^.]+$/, '') + `_${Math.round(rate * 100)}.wav`);
+    } catch (err) {
+        status.textContent = ' failed: ' + err.message;
+        log('file error: ' + (err.stack || err.message));
+    }
+});
+</script>
+</body>
+</html>

@@ -5,45 +5,9 @@ import { state, getCurrentTime } from './state.js';
 import { setBusy, showNotification } from './ui.js';
 import { pause, playPreviewBytes } from './player.js';
 import { submitJob, pollStatus, networkErrorMessage } from './export.js';
+import { audioBufferToWav } from './wav.js';
 
 const PREVIEW_SPAN = 16; // seconds
-
-// Encode a [t0, t1) slice of an AudioBuffer as a 16-bit PCM WAV blob.
-function audioBufferToWav(buffer, t0, t1) {
-    const sr = buffer.sampleRate;
-    const start = Math.floor(t0 * sr);
-    const end = Math.min(buffer.length, Math.ceil(t1 * sr));
-    const frames = end - start;
-    const channels = Math.min(2, buffer.numberOfChannels);
-    const data = new DataView(new ArrayBuffer(44 + frames * channels * 2));
-    const writeStr = (off, s) => {
-        for (let i = 0; i < s.length; i++) data.setUint8(off + i, s.charCodeAt(i));
-    };
-    writeStr(0, 'RIFF');
-    data.setUint32(4, 36 + frames * channels * 2, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    data.setUint32(16, 16, true);
-    data.setUint16(20, 1, true); // PCM
-    data.setUint16(22, channels, true);
-    data.setUint32(24, sr, true);
-    data.setUint32(28, sr * channels * 2, true);
-    data.setUint16(32, channels * 2, true);
-    data.setUint16(34, 16, true);
-    writeStr(36, 'data');
-    data.setUint32(40, frames * channels * 2, true);
-    const chans = [];
-    for (let c = 0; c < channels; c++) chans.push(buffer.getChannelData(c));
-    let off = 44;
-    for (let i = 0; i < frames; i++) {
-        for (let c = 0; c < channels; c++) {
-            const v = Math.max(-1, Math.min(1, chans[c][start + i]));
-            data.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7fff, true);
-            off += 2;
-        }
-    }
-    return new Blob([data.buffer], { type: 'audio/wav' });
-}
 
 // A PREVIEW_SPAN window centred on t, with each edge snapped outward to a
 // nearby section boundary: full sections preview identically to the export
