@@ -54,6 +54,17 @@ function registerWorkletProcessor(Module, audioNodeKey) {
 					Object.assign(this.config, config);
 					this.configure();
 				},
+				// MusicLab patch -- see static/vendor/PATCHES.md
+				// Replace the whole time map in one call. schedule() cannot do
+				// this: it prunes entries relative to each call's outputTime, so
+				// a map pre-loaded before startRendering() keeps at most two
+				// entries. Offline renders know every breakpoint up front.
+				// Entries must be sorted ascending by `output`.
+				setTimeMap: entries => {
+					let template = this.timeMap[0];
+					this.timeMap = entries.map(e => Object.assign({}, template, e));
+					return this.timeMap.length;
+				},
 				latency: _ => {
 					return this.inputLatencySeconds + this.outputLatencySeconds;
 				},
@@ -391,6 +402,10 @@ SignalsmithStretch = ((Module, audioNodeKey) => {
 				if (!moduleUrl) {
 					let moduleCode = `(${registerWorkletProcessor})((_scriptName=>${Module})(),${JSON.stringify(audioNodeKey)})`;
 					moduleUrl = URL.createObjectURL(new Blob([moduleCode], {type: 'text/javascript'}));
+					// MusicLab patch -- see static/vendor/PATCHES.md
+					// Cache it: every offline render builds a new context, and
+					// without this each one leaks another ~111 KB blob URL.
+					createNode.moduleUrl = moduleUrl;
 				}
 				audioContext[promiseKey] = audioContext.audioWorklet.addModule(moduleUrl);
 			}

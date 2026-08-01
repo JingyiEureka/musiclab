@@ -660,7 +660,73 @@ input:disabled {
 
 .seg-merge-divider {
     display: flex;
+    align-items: center;
+    gap: 14px;
     padding: 3px 14px;
+}
+
+/* ── Seam control (volume transition across a boundary) ── */
+.seam-ctl {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+}
+
+/* dimmed when the two section volumes match, so the ramp has nothing to do */
+.seam-ctl.inactive {
+    opacity: 0.45;
+}
+
+.seam-label,
+.seam-unit {
+    color: var(--dim);
+    font-size: 12px;
+}
+
+.seam-label {
+    margin-right: 4px;
+}
+
+.seam-ctl input {
+    width: 44px;
+    text-align: center;
+    padding: 3px 4px;
+    font-size: 12px;
+}
+
+.seg-seam-curve {
+    background: var(--surface2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 3px 4px;
+    margin-left: 6px;
+    outline: none;
+}
+
+.seg-seam-curve:focus {
+    border-color: var(--accent);
+}
+
+/* Ramp indicator in the section lane. Non-interactive: .lane-handle owns this
+   x position, and two pointer targets there would fight. */
+.lane-seam {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+    opacity: 0.5;
+}
+
+.lane-seam.falling {
+    background: linear-gradient(to right, var(--accent), transparent);
+}
+
+.lane-seam.rising {
+    background: linear-gradient(to right, transparent, var(--accent));
 }
 
 .btn-merge {

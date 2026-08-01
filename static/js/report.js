@@ -32,20 +32,24 @@ export function buildReportText(exportedAt) {
             factor.toFixed(2) + 'x overall)',
         'Sections:        ' + state.segments.length,
         '',
-        '  ' + pad('#', 4) + pad('Time (original)', 20) + pad('Speed', 8) + pad('Volume', 9) + 'Output',
+        '  ' + pad('#', 4) + pad('Time (original)', 20) + pad('Speed', 8) + pad('Volume', 9) +
+            pad('Output', 9) + 'Seam',
     ];
 
     let prev = 0;
     state.segments.forEach((seg, i) => {
         const end = seg.endTime ?? state.totalDuration;
         const range = formatTime(prev) + ' - ' + formatTime(end);
+        // the seam describes this section's end boundary, so the last one has none
+        const isLast = i === state.segments.length - 1;
+        const seam = isLast || !seg.seam ? '-' : seg.seam.ms + 'ms ' + seg.seam.curve;
         let row = '  ' + pad(segLabel(i), 4) + pad(range, 20);
         if (seg.skip) {
-            row += pad('SKIP', 8) + pad('-', 9) + '-';
+            row += pad('SKIP', 8) + pad('-', 9) + pad('-', 9) + seam;
         } else {
             row += pad(Math.round(seg.speed * 100) + '%', 8) +
                 pad(Math.round(seg.volume * 100) + '%', 9) +
-                formatTime((end - prev) / seg.speed);
+                pad(formatTime((end - prev) / seg.speed), 9) + seam;
         }
         lines.push(row);
         prev = end;

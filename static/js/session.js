@@ -91,7 +91,6 @@ export function expireSession() {
     if (state.isPlaying) pause();
     stopPet();
     document.getElementById('export-btn').disabled = true;
-    document.getElementById('preview-btn').disabled = true;
     banner.show('fail', 'previous edit has expired, please refresh the page and re-upload.');
 }
 

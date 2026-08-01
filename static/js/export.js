@@ -46,7 +46,7 @@ export async function submitJob(file, timestamps, speeds, volumes) {
 }
 
 // Poll /check-status/ until the task ends; the callbacks decide what the
-// result means (export downloads the mp3, preview plays it inline).
+// result means.
 // The first check fires immediately so short jobs are not stuck waiting a
 // full poll interval; a `finished` flag guarantees onDone/onFail run once
 // even if a slow response overlaps the next tick.

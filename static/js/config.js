@@ -19,3 +19,11 @@ export const ERROR_MESSAGES = {
 // The saved session expires a week after the last edit (sliding window, so
 // active editing never expires mid-work).
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// A seam is the transition at a section boundary: a gain ramp where the two
+// volumes differ, and a dip through a cut left behind by skipped sections.
+// 20 ms matches the fixed crossfade the old server pipeline used, so existing
+// projects sound unchanged.
+export const SEAM_CURVES = ['equalPower', 'linear', 'smooth'];
+export const SEAM_DEFAULT = { ms: 20, curve: 'equalPower' };
+export const SEAM_MAX_MS = 1000;

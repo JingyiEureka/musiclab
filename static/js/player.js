@@ -1,6 +1,17 @@
-// Web Audio playback: the main track plus the inline preview clip.
+// Web Audio playback. One path: the transport plays the rendered timeline.
+//
+// The transport plays the rendered timeline whenever a speed or skip is set, so
+// what you hear matches the export (ADR 0009). Volume-only edits stay on the raw
+// buffer with a live gain schedule, which is instant and already accurate.
 import { state, getCurrentTime } from './state.js';
 import { getWaveWidth, updatePlayheadUI } from './waveform.js';
+import { needsRender, sourceToOutput } from './stretch.js';
+import { getTimeline } from './timeline.js';
+import { showNotification } from './ui.js';
+
+// Bumped by anything that supersedes an in-flight render, so a slow render
+// cannot start playing after the user paused or seeked away.
+let playToken = 0;
 
 export function togglePlay() {
     if (!state.audioBuffer) return;
@@ -11,10 +22,13 @@ export function togglePlay() {
     }
 }
 
-// Preview the per-segment volume settings during playback by scheduling
-// gain changes at the segment boundaries ahead of the playhead.
+// Hear the per-segment volume settings during raw playback by scheduling gain
+// changes at the segment boundaries ahead of the playhead. Not used once the
+// timeline is rendered, since the render already carries volume.
 export function applyGainSchedule() {
     if (!state.gainNode || !state.audioCtx) return;
+    // rendered audio already has volume baked in; applying it again would square it
+    if (state.playMap) return;
     const now = state.audioCtx.currentTime;
     const t = getCurrentTime();
     const segments = state.segments;
@@ -48,26 +62,57 @@ export async function ensureAudioContext() {
 
 export async function play() {
     await ensureAudioContext();
-    stopPreviewPlayback();
     if (state.sourceNode) { state.sourceNode.disconnect(); state.sourceNode = null; }
     if (!state.gainNode || state.gainNode.context !== state.audioCtx) {
         state.gainNode = state.audioCtx.createGain();
         state.gainNode.connect(state.audioCtx.destination);
     }
+
+    let buffer = state.audioBuffer;
+    let map = null;
+    let offset = state.playOffset;
+    const token = ++playToken;
+
+    if (needsRender(state.segments)) {
+        document.getElementById('play-btn').textContent = '[ Rendering... ]';
+        try {
+            const t = await getTimeline();
+            if (token !== playToken) return; // paused, seeked, or replaced meanwhile
+            buffer = t.buffer;
+            map = t.map;
+            offset = sourceToOutput(map, state.playOffset);
+        } catch (e) {
+            if (token === playToken) {
+                showNotification('Nothing to play - all sections are skipped.');
+                updatePlayUI();
+            }
+            return;
+        }
+    }
+
+    state.playMap = map;
     state.sourceNode = state.audioCtx.createBufferSource();
-    state.sourceNode.buffer = state.audioBuffer;
+    state.sourceNode.buffer = buffer;
     state.sourceNode.connect(state.gainNode);
-    state.sourceNode.start(0, state.playOffset);
+    state.sourceNode.start(0, Math.max(0, Math.min(offset, buffer.duration)));
     state.sourceNode.onended = () => {
         if (state.isPlaying) {
             state.playOffset = 0;
             state.isPlaying = false;
+            state.playMap = null;
             cancelAnimationFrame(state.animFrameId);
             updatePlayUI();
             updatePlayheadUI();
         }
     };
-    state.playStartTime = state.audioCtx.currentTime - state.playOffset;
+    if (map) {
+        state.playOutputStart = state.audioCtx.currentTime - offset;
+        // the rendered buffer carries volume and seams already
+        state.gainNode.gain.cancelScheduledValues(state.audioCtx.currentTime);
+        state.gainNode.gain.setValueAtTime(1, state.audioCtx.currentTime);
+    } else {
+        state.playStartTime = state.audioCtx.currentTime - offset;
+    }
     state.isPlaying = true;
     applyGainSchedule();
     updatePlayUI();
@@ -75,9 +120,12 @@ export async function play() {
 }
 
 export function pause() {
-    state.playOffset = Math.min(state.audioCtx.currentTime - state.playStartTime, state.totalDuration);
+    // getCurrentTime maps rendered output time back to source time
+    state.playOffset = Math.max(0, Math.min(getCurrentTime(), state.totalDuration));
+    playToken++; // abandon any render still in flight
     if (state.sourceNode) { state.sourceNode.onended = null; state.sourceNode.stop(); state.sourceNode = null; }
     state.isPlaying = false;
+    state.playMap = null;
     cancelAnimationFrame(state.animFrameId);
     updatePlayUI();
     updatePlayheadUI();
@@ -89,6 +137,8 @@ export function playFromStart() {
     if (state.isPlaying) {
         cancelAnimationFrame(state.animFrameId);
         if (state.sourceNode) { state.sourceNode.onended = null; state.sourceNode.stop(); state.sourceNode = null; }
+        state.isPlaying = false;
+        state.playMap = null;
     }
     state.playOffset = 0;
     play();
@@ -113,30 +163,10 @@ export function seekTo(e) {
     if (state.isPlaying) {
         cancelAnimationFrame(state.animFrameId);
         if (state.sourceNode) { state.sourceNode.onended = null; state.sourceNode.stop(); state.sourceNode = null; }
+        state.isPlaying = false;
+        state.playMap = null;
         play();
     } else {
         updatePlayheadUI();
     }
-}
-
-// ── Preview clip playback ───────────────────────────────────────
-export function stopPreviewPlayback() {
-    if (state.previewSource) {
-        state.previewSource.onended = null;
-        state.previewSource.stop();
-        state.previewSource = null;
-    }
-}
-
-export async function playPreviewBytes(bytes) {
-    await ensureAudioContext();
-    const buffer = await state.audioCtx.decodeAudioData(bytes);
-    // the user may have resumed the original track while the render ran
-    if (state.isPlaying) pause();
-    stopPreviewPlayback();
-    state.previewSource = state.audioCtx.createBufferSource();
-    state.previewSource.buffer = buffer;
-    state.previewSource.connect(state.audioCtx.destination);
-    state.previewSource.onended = () => { state.previewSource = null; };
-    state.previewSource.start();
 }

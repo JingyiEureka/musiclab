@@ -13,9 +13,10 @@ import { togglePlay, playFromStart, seekTo, updatePlayUI } from './player.js';
 import {
     renderSegments, renderSectionLane, addSegment, mergeWithNext, highlightSegmentRow,
     clampSegmentEnd, updateSegmentEnd, updateSegmentSpeed, commitSegmentSpeed,
-    updateSegmentVolume, commitSegmentVolume,
+    updateSegmentVolume, commitSegmentVolume, newSegment, normalizeSegments,
+    commitSeamMs, updateSeamCurve,
 } from './segments.js';
-import { runPreview } from './preview.js';
+import { invalidateTimeline } from './timeline.js';
 import { runAndExport } from './export.js';
 
 // Reveal the editor UI and sync the header, zoom, and waveform to the current
@@ -57,7 +58,7 @@ async function restoreSession(saved) {
         state.playOffset = 0;
         state.isPlaying = false;
         state.waveformZoom = saved.waveformZoom || 1;
-        state.segments = saved.segments || [];
+        state.segments = normalizeSegments(saved.segments);
         state.sessionSavedAt = saved.savedAt || Date.now();
         await loadingHold(loadStart);
         revealEditor(saved.filename);
@@ -109,7 +110,7 @@ async function handleFile(file) {
         state.playOffset = 0;
         state.isPlaying = false;
         state.waveformZoom = 1;
-        state.segments = [{ endTime: null, speed: 1.0, volume: 1.0, skip: false }];
+        state.segments = [newSegment()];
         await loadingHold(loadStart);
         revealEditor(file.name);
         saveBlob(state.audioFile);
@@ -173,7 +174,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Player
     document.getElementById('restart-btn').addEventListener('click', playFromStart);
     document.getElementById('play-btn').addEventListener('click', togglePlay);
-    document.getElementById('preview-btn').addEventListener('click', runPreview);
     document.getElementById('waveform-wrap').addEventListener('click', seekTo);
 
     // Collapsible "learn more" help panels
@@ -302,8 +302,15 @@ document.addEventListener('DOMContentLoaded', () => {
             state.segments[parseInt(e.target.dataset.index, 10)].skip = e.target.checked;
             renderSegments();
         }
-        // commitSegmentSpeed/Volume do not re-render, so persist here too
+        if (e.target.classList.contains('seg-seam-ms')) {
+            commitSeamMs(parseInt(e.target.dataset.index, 10));
+        }
+        if (e.target.classList.contains('seg-seam-curve')) {
+            updateSeamCurve(parseInt(e.target.dataset.index, 10), e.target.value);
+        }
+        // commitSegmentSpeed/Volume do not re-render, so persist and re-warm here too
         saveMeta();
+        invalidateTimeline();
     });
     segContainer.addEventListener('input', e => {
         if (e.target.classList.contains('seg-speed')) {
@@ -334,11 +341,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const base = isNaN(cur) ? (state.segments[i].volume * 100) : cur;
             input.value = Math.round(base + step);
             commitSegmentVolume(i);
+        } else if (btn.dataset.kind === 'seam') {
+            const base = isNaN(cur) ? (state.segments[i].seam?.ms ?? 20) : cur;
+            input.value = Math.round(base + step);
+            commitSeamMs(i);
         } else {
             const base = isNaN(cur) ? (state.segments[i].endTime ?? state.totalDuration) : cur;
             updateSegmentEnd(i, (base + step).toFixed(2));
         }
-        // commitSegmentSpeed/Volume do not re-render, so persist stepper edits here too
+        // commitSegmentSpeed/Volume do not re-render, so persist and re-warm here too
         saveMeta();
+        invalidateTimeline();
     });
 });

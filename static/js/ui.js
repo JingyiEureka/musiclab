@@ -12,9 +12,8 @@ export function formatTime(s) {
 
 export function setBusy(busy) {
     state.isBusy = busy;
-    // once the session has expired, export and preview stay disabled
+    // once the session has expired, export stays disabled
     document.getElementById('export-btn').disabled = busy || state.sessionExpired;
-    document.getElementById('preview-btn').disabled = busy || state.sessionExpired;
     document.getElementById('audio-file-input').disabled = busy;
     document.getElementById('upload-zone').classList.toggle('disabled', busy);
 }

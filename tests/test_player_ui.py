@@ -27,6 +27,40 @@ def extract_css_rules(css, selector):
     return [m.group(1) for m in pattern.finditer(css)]
 
 
+class TestSinglePlaybackPath:
+    """The separate preview button is gone: the transport renders and plays the
+    full timeline, so playback and export are the same render (ADR 0010).
+
+    Replaces an earlier guard that asserted the button was *visible*. That guard
+    was written because the button had once been hidden by an inline style while
+    its code stayed wired up, making the feature unreachable while its module
+    tests passed. Deleting the button means the assertion has to invert, or it
+    would pass trivially on an element that no longer exists."""
+
+    html = read_html()
+
+    def test_no_preview_button(self):
+        assert "preview-btn" not in self.html, (
+            "the preview button was retired; playback goes through the transport"
+        )
+
+    def test_transport_controls_present(self):
+        for element_id in ("restart-btn", "play-btn", "btn-add-segment"):
+            assert f'id="{element_id}"' in self.html
+
+    def test_no_inline_hidden_player_controls(self):
+        """The failure mode that made the old guard necessary: a control wired up
+        in JS but hidden in the markup."""
+        row = re.search(
+            r'<div class="player-bar-row player-controls">(.*?)</div>',
+            self.html,
+            re.DOTALL,
+        )
+        assert row is not None, "player controls row should exist"
+        assert "display: none" not in row.group(1)
+        assert "display:none" not in row.group(1)
+
+
 class TestPlayerTimeLabels:
     html = read_html()
     css = read_css()

@@ -1,5 +1,4 @@
-// 16-bit PCM WAV encoding. Used for the local export and for slicing preview
-// windows out of the loaded buffer.
+// 16-bit PCM WAV encoding, for the local export and the dev harness.
 
 // Encode [t0, t1) of an AudioBuffer as a WAV blob. Omit t0/t1 for the whole buffer.
 export function audioBufferToWav(buffer, t0 = 0, t1 = buffer.duration) {
