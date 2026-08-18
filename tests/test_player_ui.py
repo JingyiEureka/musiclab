@@ -132,39 +132,32 @@ class TestLocalExport:
             )
 
 
-class TestUploadZoneLayout:
-    """The upload zone is a <label> so the browser opens the file picker itself.
-    A label is inline by default where the old <div> was block, and the rule
-    never declared `display`, so swapping the tag silently shrank the box from
-    full width to shrink-wrapped. Measured 780px before, 302px after.
+class TestUploadZone:
+    """The zone is a <div> whose click handler forwards to the hidden file
+    input. It was briefly a <label for>, which needs no JS -- reverted, because
+    the reason for the change turned out to be a misdiagnosis: the upload was
+    dead because a stray character stopped static/js/stretch.js from parsing,
+    which took every module with it, not because of anything about the markup.
 
-    The rule now says so explicitly; this keeps it that way."""
+    The <div> form depends on JS, so the handler is what these guard. A label is
+    also inline where a div is block, and .upload-zone declares no display, so
+    the tag and the stylesheet are coupled -- swapping it shrank the box from
+    780px to 302px."""
 
     html = read_html()
-    css = read_css()
 
-    def test_zone_is_a_label_bound_to_the_input(self):
-        assert 'for="audio-file-input"' in self.html, (
-            "without the for= binding the label does nothing and the picker "
-            "never opens, since there is no click handler any more"
+    def test_zone_is_a_div(self):
+        assert '<div class="upload-zone" id="upload-zone">' in self.html, (
+            "the stylesheet has no `display` rule, so it relies on the element "
+            "defaulting to block; a <label> here silently shrink-wraps the box"
         )
 
-    def test_zone_declares_display_block(self):
-        rules = extract_css_rules(self.css, ".upload-zone")
-        assert rules, ".upload-zone rule is missing"
-        assert any("display: block" in r for r in rules), (
-            "a label is inline by default; without display:block the zone "
-            "shrink-wraps instead of filling the row"
-        )
-
-    def test_file_input_is_hidden_without_display_none(self):
-        """display:none is not reliably activated by a label on iOS, so the
-        input is kept in the layout at zero size instead."""
-        rules = extract_css_rules(self.css, '.upload-zone input[type="file"]')
-        assert rules, "the file input styling is missing"
-        body = rules[0]
-        assert "display: none" not in body
-        assert "opacity: 0" in body
+    def test_click_handler_forwards_to_the_file_input(self):
+        """Without it the zone does nothing at all: the input is display:none,
+        so there is no other way to reach the picker."""
+        with open(os.path.join(STATIC, "js", "main.js"), "r") as f:
+            main_js = f.read()
+        assert "audio-file-input').click()" in main_js
 
 
 class TestPlayerTimeLabels:
