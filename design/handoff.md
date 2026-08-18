@@ -1,8 +1,9 @@
 # Handoff: client-side DSP refactor
 
-Sessions of 2026-08-01 / 08-02 / 08-18. Branch `restructure-layout`, **not
-pushed and not merged to `main`**. Steps 1-3 are committed; step 4 is the
-remaining work. Section 6 lists what is open.
+Sessions of 2026-08-01 / 08-02 / 08-18 / 08-19. Branch `restructure-layout`,
+**not pushed and not merged to `main`**. Steps 1-3 are committed and step 4 is
+the remaining work; every technical risk the refactor opened is now closed
+(sections 5a-5c). Section 6 lists what is left.
 
 ## 1. Where the refactor stands
 
@@ -18,9 +19,9 @@ Original four-step plan, plus transport work that emerged from testing:
 | 4 | Delete `process_audio`, trim `requirements.txt`, update `ARCHITECTURE.md` | **not started** |
 
 Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
-7 mp3) via `static/dev/stretch-test.html`, plus **68 pytest**. All green.
-Export was also driven end to end through the real UI -- see
-`design/step3-plan.md` section 5.1.
+7 mp3) via `static/dev/stretch-test.html`, plus **98 pytest**. All green. Export
+was also driven end to end through the real UI, and measured on the phone -- see
+`design/step3-plan.md` section 5.1 and section 5c below.
 
 ## 2. What the app does now
 
@@ -78,10 +79,23 @@ if the licence is ever ruled out. `tests/test_player_ui.py` enforces both.
 ## 5. Commit history and how to check the tree
 
 ```
+25963ea  Revert the upload zone to a div with a click handler
+630e835  Restore the upload zone's layout after the label change
+ab75a0b  Fix a stray character that broke every module, and guard against the next
+476abb6  Keep TLS out of the app in the phone-testing notes
+64a9ffa  Report memory alongside timing under ?timing=1
+fa0e830  Encode MP3 in the browser; drop the server export round trip   (step 3)
+92cdca2  Plan step 3, and record the licence ADR 0006 left out
 2cb5b0a  Correct the production TLS note in the handoff
 f92de83  Make client-side rendering work off the dev machine   (secure context)
 181704a  Move audio processing into the browser (steps 1-2)
 ```
+
+`tests/test_js_syntax.py` parses every frontend module with `node --check`. It
+exists because a stray U+00B7 in `stretch.js` shipped in `476abb6` under a commit
+message claiming "No code change": ES modules fail as a graph, so one unparseable
+file left the whole page without event handlers, and ruff and pytest read only
+Python. Read the diff before committing, and do not trust `git add -A`.
 
 Per `CLAUDE.md`, before committing:
 
@@ -250,6 +264,39 @@ out leaves no trace. Knowing a 12 s file sits at 9 MB and a 5-minute one at
 ~230 MB says how close the ceiling is, rather than only whether this attempt
 survived.
 
+## 5c. Memory ceiling: cleared, and the heavy direction is slowing down
+
+Measured at the export, which is the peak: source buffer, rendered timeline and
+encoded mp3 are all live at once. A 3:11 source at 48 kHz stereo, slowed to
+**0.38x**:
+
+```
+mp3 11.4 MB in 13.7s · 252 MB live (source 70 + render 182) + 11.4 MB mp3
+```
+
+**263 MB peak, and it completed.** That is above the ~227 MB this document
+previously projected as the 5-minute worst case, so the ceiling that ADR 0001,
+0009 and 0010 all flagged is cleared with margin.
+
+Every figure cross-checks: 70 MB of source is 3:11 at 48 kHz stereo, 182 MB of
+render is 8:17, and 11.4 MB of mp3 at 192 kbps is 8:18 -- one second more than
+the render, which is the encoder's padding. Encoding ran at 36x realtime.
+
+**Slowing down is the direction that costs memory, not length.** 0.38x turned a
+70 MB source into a 182 MB render; the render is sized by *output* duration. This
+is also the app's real use -- a dancer rehearsing slowly -- so the worst case in
+practice is a slow variation, not a long one. Chasing the longest file was the
+wrong instinct.
+
+Two things this does not establish:
+
+- Whether it ran on the phone. The 36x encode is faster than the 23.6x measured
+  on the dev Mac, which fits the pattern where the phone's render figures
+  (54-75x) also beat the desktop's 30x, but the numbers alone cannot prove it.
+- The true instantaneous peak may be slightly higher than 263 MB: `new Blob(parts)`
+  can briefly hold the chunk array and the blob together, adding up to another
+  11 MB.
+
 ## 6. Open items, roughly in priority order
 
 1. ~~**Measure on a real phone.**~~ Done -- see section 5b. Serve over https
@@ -261,13 +308,7 @@ survived.
 3. ~~**Mobile fallback**~~ -- dropped. It existed for a 30-40 s mobile render
    that does not happen. `PRESET_PREVIEW` stays in the code for the dev harness.
    The progressive-playback plan remains in git history if it is ever needed.
-4. **Memory ceiling -- now the only untested risk.** Source plus rendered
-   timeline is ~230 MB of Float32 for 5 minutes stereo 48 kHz, and **export is
-   where it peaks**, since the encoder output lives alongside both. The encoder
-   itself is incremental and adds no full-length copy, so the ceiling is
-   unchanged from playback -- but it has still only been exercised at 3 minutes.
-   Try the longest variation available, on the phone. Flagged in ADR 0001, 0009,
-   0010.
+4. ~~**Memory ceiling.**~~ Cleared 2026-08-19, see section 5c.
 5. ~~**Step 3**~~ done. `static/js/mp3.js` wraps lamejs; `design/step3-plan.md`
    has the detail, including why lamejs's LGPL-3.0 is acceptable here and what
    would need to change if it stopped being (ADR 0006 amendment).

@@ -69,10 +69,11 @@ Most of Step 3 is already built. What remains is an encoder and some wiring.
   to work as a file, loaded by `import` or a `<script>` tag.
 - **No new server headers.** ADR 0006 rejected `ffmpeg.wasm` partly because its
   fast core needs COOP/COEP.
-- **Memory is the open risk.** A 5-minute stereo 48 kHz render is ~115 MB of
-  Float32, and the source buffer sits alongside it, so ~230 MB before encoding
-  starts. Untested above the 3-minute mark. The encoder must not add a third
-  full-length copy.
+- **Memory was the open risk.** A 5-minute stereo 48 kHz render is ~115 MB of
+  Float32 with the source alongside it, so ~230 MB before encoding starts. The
+  encoder must not add a third full-length copy. **Settled by measurement**: a
+  263 MB peak completed on the phone (section 5.2), and the render is sized by
+  output duration, so slowing down costs more than length does.
 - **The main thread runs the UI.** lamejs claims ~20x realtime, so a 3-minute
   file is several seconds of computation that must not freeze the page.
 - Verified on the phone in section 5b of `design/handoff.md`: a ~3 minute
@@ -361,12 +362,18 @@ main thread that keeps painting is the right side of that deal.
 Extrapolated, a 3-minute export is roughly 7.6 s of encoding on desktop, on top
 of 2.4-3.2 s of rendering measured on the phone in `handoff.md` section 5b.
 
-Still outstanding:
+Measured on a device 2026-08-19, at the export:
 
-- [ ] Encode time on the phone. Desktop only so far.
-- [ ] **Peak memory for the longest variation available.** The last untested risk,
-      and export is where it peaks: source, render, and encoder output all live at
-      once. `?timing=1` reports render time; memory needs a real device.
+```
+mp3 11.4 MB in 13.7s · 252 MB live (source 70 + render 182) + 11.4 MB mp3
+```
+
+- [x] Encode time off the dev machine: 497 s of audio in 13.7 s, 36x realtime.
+- [x] **Peak memory.** 263 MB including the mp3, and it completed -- above the
+      ~227 MB projected for the 5-minute worst case. Detail and the caveats in
+      `design/handoff.md` section 5c. The load-bearing finding: the render is
+      sized by *output* duration, so **slowing down costs memory, not length**.
+      A 3:11 source at 0.38x produced an 8:17 render.
 
 ## 6. Out of scope
 
