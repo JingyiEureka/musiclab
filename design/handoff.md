@@ -115,9 +115,13 @@ introduced, and it did not exist before step 1.
   first Play fail after a file has been uploaded and split.
 - `renderTimeline` distinguishes "no AudioWorklet support" from "loaded over
   http" so the message does not blame the browser for the origin.
-- **Production**: nginx on the box terminates TLS, but plain http on port 80
-  also answers. Confirm the URL people actually use is `https://`, and add an
-  http -> https redirect so it cannot silently degrade.
+- **Production is already fine.** `musiclab.jyylab.cc` is an nginx vhost proxying
+  to `localhost:8000`, with a Let's Encrypt certificate and a Certbot-managed
+  `301` from port 80. Verified: `http://musiclab.jyylab.cc/` redirects, and
+  https answers 200 with a valid chain. An earlier note here claimed port 80
+  served the app without redirecting -- that was a `curl` against the bare IP,
+  which hits the `default_server` vhost and its `/var/www/html` welcome page, not
+  MusicLab. Only the LAN-IP dev case needs the certificate work above.
 
 ### Testing on a phone: what iOS actually requires
 
