@@ -210,11 +210,20 @@ Two caveats on reading these numbers:
   The worst case actually observed is 3.15 s, which is why this no longer blocks
   anything.
 
-The transport reports these figures itself -- open the app with `?timing=1` and
-every render prints duration, wall time and throughput, and stays on screen. That
-flag also surfaces the two cases that are silent by default: a cache hit, and a
-volume-only edit that never enters the render path. Both were mistaken for a
-failed measurement before the flag existed.
+The app reports these figures itself -- open it with `?timing=1`:
+
+- every render prints duration, wall time, throughput, **and how many MB are
+  live**, staying on screen instead of vanishing after 2.5 s;
+- export prints mp3 size, encode time, and the peak memory triple (source +
+  render + mp3), which is the highest the app ever gets;
+- the two cases that are silent by default are surfaced -- a cache hit, and a
+  volume-only edit that never renders. Both were mistaken for a failed
+  measurement before the flag existed.
+
+The MB figures exist because iOS has no memory API and a tab killed for running
+out leaves no trace. Knowing a 12 s file sits at 9 MB and a 5-minute one at
+~230 MB says how close the ceiling is, rather than only whether this attempt
+survived.
 
 ## 6. Open items, roughly in priority order
 

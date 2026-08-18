@@ -22,17 +22,28 @@ const TIMING = new URLSearchParams(location.search).has('timing');
 // A cache hit returns in about no time, so a figure worth reporting means work
 // actually happened. Without the flag, only a real render is announced, and
 // only to explain a wait the user already noticed.
-function reportRenderTime(ms, map) {
+function reportRenderTime(ms, map, buffer) {
     const rendered = ms > 200;
     if (!rendered && !TIMING) return;
     const speed = map.outputDuration / (ms / 1000);
     showNotification(
         rendered
             ? `rendered ${formatTime(map.outputDuration)} in ${(ms / 1000).toFixed(2)}s`
-              + ` (${speed.toFixed(0)}x realtime)`
+              + ` (${speed.toFixed(0)}x realtime)${TIMING ? ', ' + memoryNote(buffer) : ''}`
             : `cache hit, no render (${ms.toFixed(0)}ms)`,
         TIMING,
     );
+}
+
+// iOS has no memory API, and a tab killed for running out leaves no trace, so
+// the sizes are reported instead: they say how close a file is to the ceiling
+// rather than only whether this one survived. Export is the peak, holding the
+// source and the render at once before the encoder adds its output.
+export function memoryNote(rendered) {
+    const mb = b => (b.length * Math.min(2, b.numberOfChannels) * 4) / 1048576;
+    const src = state.audioBuffer ? mb(state.audioBuffer) : 0;
+    const out = rendered ? mb(rendered) : 0;
+    return `${(src + out).toFixed(0)} MB live (source ${src.toFixed(0)} + render ${out.toFixed(0)})`;
 }
 
 export function togglePlay() {
@@ -140,7 +151,7 @@ export async function play() {
             buffer = t.buffer;
             map = t.map;
             offset = sourceToOutput(map, state.playOffset);
-            reportRenderTime(performance.now() - startedAt, map);
+            reportRenderTime(performance.now() - startedAt, map, buffer);
         } catch (e) {
             if (token === playToken) {
                 if (e && e.code === 'all-skipped') {
