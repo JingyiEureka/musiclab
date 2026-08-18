@@ -141,19 +141,26 @@ introduced, and it did not exist before step 1.
   which hits the `default_server` vhost and its `/var/www/html` welcome page, not
   MusicLab. Only the LAN-IP dev case needs the certificate work above.
 
-### Testing on a phone: what iOS actually requires
+### Testing on a phone: the setup that worked
 
-An http LAN IP can never work, so device testing needs TLS. A plain one-command
-self-signed cert is **not** enough -- iOS rejects it and Safari lands on
+An http LAN IP can never work, so device testing needs TLS. Two things went wrong
+before this worked, both worth not repeating.
+
+**Do not put TLS in uvicorn.** It accepts `--ssl-keyfile/--ssl-certfile` and it
+was used once, but production is `browser --https--> nginx --http--> uvicorn:8000`
+and the app carries no TLS anywhere. Terminating it in the app means certificate
+debugging happens at a layer the deployment does not have.
+
+**A one-command self-signed certificate is not enough for iOS.** Safari lands on
 `about:blank` after "visit this website", with no request reaching the server.
-Since iOS 13 a TLS server certificate must carry an `extendedKeyUsage` extension
-containing `serverAuth`; `openssl req -x509` alone emits none, and also marks the
-cert `CA:TRUE`, which is wrong for a leaf.
+Since iOS 13 a TLS server certificate must carry `extendedKeyUsage = serverAuth`;
+`openssl req -x509` alone emits none, and marks the certificate `CA:TRUE`, which
+is wrong for a leaf. What works is a root CA plus a leaf signed by it.
 
-What works is a root CA plus a leaf signed by it. Substitute your LAN IP:
+`dev-tls/` (gitignored) held the working setup: `nginx.conf`, `Dockerfile`,
+`certs/`, `capub/` with only the public CA in it, and `hello/index.html`.
 
 ```
-cd certs
 IP=$(ipconfig getifaddr en0)
 
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \
@@ -169,59 +176,42 @@ extendedKeyUsage=serverAuth
 subjectAltName=IP:$IP,IP:127.0.0.1,DNS:localhost
 EOF
 openssl x509 -req -in dev.csr -CA ca-cert.pem -CAkey ca-key.pem -CAcreateserial \
-  -out dev-cert.pem -days 398 -sha256 -extfile ext.cnf
+  -out dev-cert.pem -days 380 -sha256 -extfile ext.cnf
 cat dev-cert.pem ca-cert.pem > dev-chain.pem
-cp ca-cert.pem musiclab-ca.crt
+cp ca-cert.pem ../capub/musiclab-ca.crt
 ```
 
-**Terminate TLS in a proxy, never in the app.** Production is
-`browser --https--> nginx --http--> uvicorn:8000`, and the app has no TLS
-anywhere -- not in `Dockerfile`, not in `docker-compose.yml`. Keep it that way
-locally: run uvicorn exactly as section 7 says, on plain http, and put a
-TLS-terminating proxy in front of it.
+nginx ran in Docker, listening 8443 for TLS and 8080 to hand over the CA:
 
-Uvicorn does accept `--ssl-keyfile/--ssl-certfile`, and it was used here once. It
-works, but it was the wrong call: certificate debugging then happens at a layer
-production does not have, so nothing learned transfers, and local stops
-resembling the deployment. Use nginx locally for the same reason production
-does.
+- `proxy_pass http://host.docker.internal:8000/` -- on macOS the container cannot
+  reach the host on `127.0.0.1`, and uvicorn must be started with
+  `--host 0.0.0.0` for it to be reachable at all.
+- **Bake the files into the image, do not bind-mount them.** Docker Desktop
+  cannot read `~/Desktop` without Full Disk Access, and a mount there fails with
+  `Operation not permitted`.
+- Serve the CA over plain http from a directory holding **only** the public
+  certificate. Pointing a static server at the directory with `ca-key.pem` in it
+  publishes a CA the phone trusts to everyone on the network. That mistake was
+  made here.
+- `.crt` must be served as `application/x-x509-ca-cert` or iOS downloads it as a
+  file instead of offering to install it. nginx's mime.types does this already.
 
-```
-# /opt/homebrew/etc/nginx/servers/musiclab-dev.conf
-server {
-    listen 8443 ssl;
-    server_name _;
-    ssl_certificate     /Users/<you>/Desktop/musiclab/certs/dev-chain.pem;
-    ssl_certificate_key /Users/<you>/Desktop/musiclab/certs/dev-key.pem;
-    client_max_body_size 200M;   # matches the production vhost
-    location / {
-        proxy_pass http://127.0.0.1:8000/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-```
+On the phone, in **Safari**: fetch `http://<lan-ip>:8080/musiclab-ca.crt`, install
+it (Settings -> General -> VPN & Device Management), then **enable it under
+Settings -> General -> About -> Certificate Trust Settings**. That switch is a
+different screen from the install and nothing prompts for it; skipping it fails
+with `ERR_CERT_AUTHORITY_INVALID`. Delete the profile when finished -- it is a
+trusted root whose private key is sitting on the dev machine.
 
-`brew services restart nginx`, then reach the app at `https://<lan-ip>:8443/`.
+**Verify the certificate with a static page before opening the app.** `hello/`
+reported `isSecureContext` and `audioWorklet` on both context types and nothing
+else. Doing this first is what finally separated the certificate problem from the
+app problem: with them mixed together, an app that would not respond looked like
+a trust failure, and it was actually an unrelated syntax error.
 
-On the phone: download `musiclab-ca.crt`, install it (Settings -> General ->
-VPN & Device Management), then **enable it under Settings -> General -> About ->
-Certificate Trust Settings** -- installing without that switch still fails with
-`ERR_CERT_AUTHORITY_INVALID`. Delete the profile when finished.
-
-Serve the CA over http from a directory holding **only that file**. Do not point a
-static server at `certs/`: it contains `ca-key.pem`, and anyone on the network
-could then take a CA the phone trusts and sign any domain with it. That mistake
-was made during this session, which is why `certs/` is deleted rather than reused.
-
-Known unresolved: with this set up once, iOS Chrome still rejected the root
-(`ERR_CERT_AUTHORITY_INVALID`) even with full trust enabled -- it does not use the
-system trust store the way Safari does -- and Safari then failed with "network
-connection lost", which was never diagnosed. **Desktop needs none of this**:
-`http://127.0.0.1:8000` is a secure context by the localhost exemption. On Android
-`adb reverse tcp:8000 tcp:8000` sidesteps certificates entirely by making the
-phone see `http://localhost:8000`.
+Desktop needs none of this -- `http://127.0.0.1:8000` is a secure context by the
+localhost exemption. On Android, `adb reverse tcp:8000 tcp:8000` sidesteps
+certificates entirely.
 
 ## 5b. Phone measurement: the mobile concern was unfounded
 
@@ -297,27 +287,62 @@ Two things this does not establish:
   can briefly hold the chunk array and the blob together, adding up to another
   11 MB.
 
-## 6. Open items, roughly in priority order
+## 6. Open items
 
-1. ~~**Measure on a real phone.**~~ Done -- see section 5b. Serve over https
-   (section 5a) or it cannot run at all.
-2. **Pre-warm the WASM module** on file open, so the first play does not pay WASM
-   compile + worklet registration. Now low value: the whole render is 2.38 s on
-   the phone, which caps what pre-warming can recover. Worth doing only if a
-   clean cold measurement comes in far above that.
-3. ~~**Mobile fallback**~~ -- dropped. It existed for a 30-40 s mobile render
-   that does not happen. `PRESET_PREVIEW` stays in the code for the dev harness.
-   The progressive-playback plan remains in git history if it is ever needed.
-4. ~~**Memory ceiling.**~~ Cleared 2026-08-19, see section 5c.
-5. ~~**Step 3**~~ done. `static/js/mp3.js` wraps lamejs; `design/step3-plan.md`
-   has the detail, including why lamejs's LGPL-3.0 is acceptable here and what
-   would need to change if it stopped being (ADR 0006 amendment).
-6. **Step 4**: delete `process_audio`, drop librosa/numpy/soundfile from
-   `requirements.txt` (keep ffmpeg for video extraction), update `ARCHITECTURE.md`
-   -- its diagrams still show the upload/poll pipeline, and known issues 1 and 3
-   become moot once `TASKS_DB` goes.
-7. **Verify 4C by eye.** The seam control and lane ramp pass structural tests, but
-   gradient weight and crowding on a narrow screen were never looked at.
+Every risk the refactor opened is closed. What is left is deletion, one decision,
+and two small things.
+
+### 6.1 Step 4 -- the only remaining work
+
+Pure deletion, nothing in it changes behaviour:
+
+- [ ] Delete `process_audio` and `app/speed_changer.py`.
+- [ ] Delete the endpoints `/upload-audio/`, `/check-status/{id}`, `/download/{id}`
+      and `TASKS_DB`. **Keep `/extract-audio/`** -- video containers Safari cannot
+      decode still need it (ADR 0001). It is the only server call the app makes.
+- [ ] Drop librosa, numpy and soundfile from `requirements.txt`. Keep ffmpeg for
+      the video extraction above.
+- [ ] Update `ARCHITECTURE.md`: its diagrams still show the upload/poll pipeline,
+      and known issues 1 and 3 (the one-job concurrency cap, and stuck tasks
+      holding the slot) stop existing once `TASKS_DB` goes.
+- [ ] Check nothing else imports what is being deleted, and re-run the browser
+      suite as well as pytest -- the pre-commit command is Python-only.
+
+### 6.2 One decision: memory on other people's phones
+
+Nothing is broken; this is about devices that are not the one measured. Memory
+scales with **output** duration, so it is the slowdown that costs, not the file
+length. Projected peaks for a 3-minute 48 kHz stereo source:
+
+| speed | output | peak |
+|---|---|---|
+| 1.0x | 3:00 | ~140 MB |
+| 0.5x | 6:00 | ~280 MB |
+| 0.38x (measured, fine) | 8:17 | 263 MB |
+| 0.33x | 9:00 | ~390 MB |
+
+A 5-minute variation at 0.5x projects to roughly 450 MB, which is where an older
+iPhone would be at risk. iOS gives no memory API and kills the tab silently, so
+the failure leaves no evidence.
+
+Two options, **not yet decided**:
+
+- **Warn before exporting.** Project the peak from the segment state and say so
+  when it is large. Perhaps 20 lines, no architectural change, and it converts a
+  silent death into a clear message. Recommended.
+- **Chunked export.** Render and encode in windows, discarding each -- peak drops
+  from 182 MB to tens. But it reintroduces a phase discontinuity at every chunk
+  boundary, which is exactly what ADR 0005 avoids, and breaks the guarantee that
+  the exported bytes come from the buffer playback used, which ADR 0010 rests on.
+  Needs its own ADR.
+
+### 6.3 Two small things
+
+- [ ] **Pre-warm the WASM module** on file open. Low value now: the whole render
+      is 2.4-3.2 s on the phone, which caps what pre-warming can recover.
+- [ ] **Verify the seam UI by eye.** The seam control and lane ramp pass
+      structural tests, but gradient weight and crowding on a narrow screen have
+      never been looked at.
 
 ## 7. Running things
 
