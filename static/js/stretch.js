@@ -102,7 +102,12 @@ export function buildTimeMap(segments, totalDuration) {
         }
         sourceStart = end;
     });
-    if (kept.length === 0) throw new Error('all sections are skipped, nothing to render');
+    if (kept.length === 0) {
+        // tagged so the transport can tell this apart from a render that broke
+        const err = new Error('all sections are skipped, nothing to render');
+        err.code = 'all-skipped';
+        throw err;
+    }
 
     const breakpoints = [];
     const cuts = [];
@@ -253,6 +258,17 @@ function copyChannels(buffer, channels) {
 }
 
 // ── render ──────────────────────────────────────────────────────
+// Names the failing step. A render is a chain of awaits into WASM and a
+// worklet, and the only channel for diagnosing one on a phone is the message
+// that reaches the screen.
+async function stage(name, fn) {
+    try {
+        return await fn();
+    } catch (e) {
+        throw new Error(`${name} failed: ${(e && e.message) || e}`);
+    }
+}
+
 export async function renderTimeline(buffer, segments, {
     preset = PRESET_EXPORT,
     peakSafe = true,
@@ -262,18 +278,28 @@ export async function renderTimeline(buffer, segments, {
     const frames = Math.ceil(map.outputDuration * buffer.sampleRate);
     if (frames <= 0) throw new Error('nothing to render');
 
-    const ctx = new OfflineAudioContext(channels, frames, buffer.sampleRate);
-    const createNode = await loadFactory();
-    const node = await createNode(ctx, {
+    const ctx = await stage('audio context', async () =>
+        new OfflineAudioContext(channels, frames, buffer.sampleRate));
+    // audioWorklet is [SecureContext] in the spec, so it is absent over plain
+    // http even on a browser that fully supports it. localhost counts as
+    // secure, which is why this only ever shows up off the dev machine.
+    if (!ctx.audioWorklet) {
+        throw new Error(window.isSecureContext
+            ? 'this browser has no AudioWorklet support'
+            : 'audio processing needs https - this page was loaded over http');
+    }
+
+    const createNode = await stage('loading engine', loadFactory);
+    const node = await stage('starting engine', () => createNode(ctx, {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [channels],
-    });
-    await node.configure({ preset });
+    }));
+    await stage('configure', () => node.configure({ preset }));
 
     const chans = copyChannels(buffer, channels);
-    await node.addBuffers(chans, chans.map(a => a.buffer));
-    const loaded = await node.setTimeMap(map.breakpoints);
+    await stage('load audio', () => node.addBuffers(chans, chans.map(a => a.buffer)));
+    const loaded = await stage('time map', () => node.setTimeMap(map.breakpoints));
     if (loaded !== map.breakpoints.length) {
         throw new Error(`time map load failed: ${loaded} of ${map.breakpoints.length}`);
     }
@@ -286,7 +312,7 @@ export async function renderTimeline(buffer, segments, {
     applySeamDips(seamGain.gain, map);
     node.connect(volumeGain).connect(seamGain).connect(ctx.destination);
 
-    const rendered = await ctx.startRendering();
+    const rendered = await stage('render', () => ctx.startRendering());
     return peakSafe ? applyPeakSafety(rendered) : rendered;
 }
 

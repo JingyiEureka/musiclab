@@ -3,7 +3,7 @@ import { CONFIG } from './config.js';
 import { state, getCurrentTime } from './state.js';
 import {
     setBusy, showUploadError, hideUploadError, setUploadLoading, loadingHold,
-    showResumeModal, hideResumeModal, formatTime,
+    showResumeModal, hideResumeModal, formatTime, banner,
 } from './ui.js';
 import {
     saveBlob, saveMeta, armExpiry, idbClear, checkForSavedSession,
@@ -137,6 +137,13 @@ async function handleFile(file) {
 document.addEventListener('DOMContentLoaded', () => {
     state.segments = [];
     renderSegments();
+
+    // Every edit is rendered in the browser by an AudioWorklet, which the spec
+    // only exposes in a secure context. Say so up front rather than letting the
+    // first Play fail after the user has already uploaded and split a file.
+    if (!window.isSecureContext) {
+        banner.show('fail', 'this page needs https - speed and skip edits cannot be played over http.');
+    }
 
     // Upload zone
     const zone = document.getElementById('upload-zone');

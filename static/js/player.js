@@ -7,11 +7,32 @@ import { state, getCurrentTime } from './state.js';
 import { getWaveWidth, updatePlayheadUI } from './waveform.js';
 import { needsRender, sourceToOutput } from './stretch.js';
 import { getTimeline } from './timeline.js';
-import { showNotification } from './ui.js';
+import { showNotification, formatTime } from './ui.js';
 
 // Bumped by anything that supersedes an in-flight render, so a slow render
 // cannot start playing after the user paused or seeked away.
 let playToken = 0;
+
+// ?timing=1 keeps every figure on screen and reports the cases that normally
+// stay silent, so a render can be timed on a phone with no console. Off by
+// default: during ordinary listening these lines are noise.
+const TIMING = new URLSearchParams(location.search).has('timing');
+
+// A cache hit returns in about no time, so a figure worth reporting means work
+// actually happened. Without the flag, only a real render is announced, and
+// only to explain a wait the user already noticed.
+function reportRenderTime(ms, map) {
+    const rendered = ms > 200;
+    if (!rendered && !TIMING) return;
+    const speed = map.outputDuration / (ms / 1000);
+    showNotification(
+        rendered
+            ? `rendered ${formatTime(map.outputDuration)} in ${(ms / 1000).toFixed(2)}s`
+              + ` (${speed.toFixed(0)}x realtime)`
+            : `cache hit, no render (${ms.toFixed(0)}ms)`,
+        TIMING,
+    );
+}
 
 export function togglePlay() {
     if (!state.audioBuffer) return;
@@ -73,17 +94,28 @@ export async function play() {
     let offset = state.playOffset;
     const token = ++playToken;
 
-    if (needsRender(state.segments)) {
+    if (!needsRender(state.segments)) {
+        if (TIMING) showNotification('no render: volume-only edit, playing the source', true);
+    } else {
         document.getElementById('play-btn').textContent = '[ Rendering... ]';
+        const startedAt = performance.now();
         try {
             const t = await getTimeline();
             if (token !== playToken) return; // paused, seeked, or replaced meanwhile
             buffer = t.buffer;
             map = t.map;
             offset = sourceToOutput(map, state.playOffset);
+            reportRenderTime(performance.now() - startedAt, map);
         } catch (e) {
             if (token === playToken) {
-                showNotification('Nothing to play - all sections are skipped.');
+                if (e && e.code === 'all-skipped') {
+                    showNotification('Nothing to play - all sections are skipped.');
+                } else {
+                    // Anything else is a real fault. Report it verbatim and keep
+                    // it on screen: on a phone this message is the only evidence.
+                    console.error('timeline render failed', e);
+                    showNotification(`Could not render: ${(e && e.message) || e}`, true);
+                }
                 updatePlayUI();
             }
             return;

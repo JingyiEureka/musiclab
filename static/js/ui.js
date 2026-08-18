@@ -18,13 +18,15 @@ export function setBusy(busy) {
     document.getElementById('upload-zone').classList.toggle('disabled', busy);
 }
 
-export function showNotification(msg) {
+// sticky keeps an error on screen instead of hiding it after 2.5s, so it can be
+// read or screenshotted on a device with no console.
+export function showNotification(msg, sticky = false) {
     const el = document.getElementById('seg-notification');
     if (!el) return;
     el.textContent = msg;
     el.style.display = 'block';
     clearTimeout(el._hideTimer);
-    el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, 2500);
+    if (!sticky) el._hideTimer = setTimeout(() => { el.style.display = 'none'; }, 2500);
 }
 
 export function showUploadError(msg) {

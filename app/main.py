@@ -149,7 +149,7 @@ def get_owned_task(task_id: str, request: Request) -> dict:
 @app.middleware("http")
 async def revalidate_js_modules(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path.startswith("/static/js/"):
+    if request.url.path.startswith(("/static/js/", "/static/vendor/")):
         response.headers["Cache-Control"] = "no-cache"
     return response
 

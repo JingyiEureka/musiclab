@@ -61,6 +61,37 @@ class TestSinglePlaybackPath:
         assert "display:none" not in row.group(1)
 
 
+class TestSecureContextGuard:
+    """Rendering an edit needs an AudioWorklet, which the spec exposes only in a
+    secure context. localhost counts as secure, so this never fails on the dev
+    machine -- it failed on a phone loading the LAN IP over plain http, and the
+    error it produced blamed the browser instead of the origin."""
+
+    def read_js(self, name):
+        with open(os.path.join(STATIC, "js", name), "r") as f:
+            return f.read()
+
+    def test_startup_warns_when_not_secure(self):
+        assert "isSecureContext" in self.read_js("main.js"), (
+            "warn at load, not after the user has uploaded and split a file"
+        )
+
+    def test_render_error_names_the_origin(self):
+        """A missing audioWorklet has two causes; the message must tell them
+        apart, or an http origin reads as an unsupported browser."""
+        stretch = self.read_js("stretch.js")
+        assert "isSecureContext" in stretch
+        assert "https" in stretch
+
+    def test_render_failures_are_not_all_reported_as_skipped(self):
+        """The bug that hid this: one catch reported every render failure as
+        'all sections are skipped'."""
+        player = self.read_js("player.js")
+        assert "all-skipped" in player, (
+            "the genuine empty-timeline case has to be matched explicitly"
+        )
+
+
 class TestPlayerTimeLabels:
     html = read_html()
     css = read_css()

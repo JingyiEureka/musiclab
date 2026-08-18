@@ -93,18 +93,132 @@ D  static/js/preview.js              retired
 ?? design/                           step 2 plan + this handoff
 ```
 
+## 5a. The app now requires a secure context
+
+`audioWorklet` is `[SecureContext]` in the Web Audio spec, so it is absent over
+plain http on a browser that otherwise supports it fully. Rendering an edit goes
+through an AudioWorklet, so **the whole client-side DSP path is dead over http**.
+
+This is easy to miss because `localhost` and `127.0.0.1` count as secure. Measured
+on one Chrome build, same page, only the origin differing:
+
+| origin | `isSecureContext` | `ctx.audioWorklet` |
+|---|---|---|
+| `http://127.0.0.1:8000` | true | present |
+| `http://172.20.10.2:8000` (LAN IP) | **false** | **absent** |
+| `https://172.20.10.2:8443` (self-signed) | true | present |
+
+The backend never needed this -- it is a constraint the client-DSP move
+introduced, and it did not exist before step 1.
+
+- Startup shows a banner when `!window.isSecureContext`, rather than letting the
+  first Play fail after a file has been uploaded and split.
+- `renderTimeline` distinguishes "no AudioWorklet support" from "loaded over
+  http" so the message does not blame the browser for the origin.
+- **Production**: nginx on the box terminates TLS, but plain http on port 80
+  also answers. Confirm the URL people actually use is `https://`, and add an
+  http -> https redirect so it cannot silently degrade.
+
+### Testing on a phone: what iOS actually requires
+
+An http LAN IP can never work, so device testing needs TLS. A plain one-command
+self-signed cert is **not** enough -- iOS rejects it and Safari lands on
+`about:blank` after "visit this website", with no request reaching the server.
+Since iOS 13 a TLS server certificate must carry an `extendedKeyUsage` extension
+containing `serverAuth`; `openssl req -x509` alone emits none, and also marks the
+cert `CA:TRUE`, which is wrong for a leaf.
+
+What works is a root CA plus a leaf signed by it. Substitute your LAN IP:
+
+```
+cd certs
+IP=$(ipconfig getifaddr en0)
+
+openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 \
+  -keyout ca-key.pem -out ca-cert.pem -subj "/CN=MusicLab Dev CA" \
+  -addext "basicConstraints=critical,CA:true" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+
+openssl req -newkey rsa:2048 -nodes -keyout dev-key.pem -out dev.csr -subj "/CN=$IP"
+cat > ext.cnf <<EOF
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=IP:$IP,IP:127.0.0.1,DNS:localhost
+EOF
+openssl x509 -req -in dev.csr -CA ca-cert.pem -CAkey ca-key.pem -CAcreateserial \
+  -out dev-cert.pem -days 398 -sha256 -extfile ext.cnf
+cat dev-cert.pem ca-cert.pem > dev-chain.pem
+cp ca-cert.pem musiclab-ca.crt
+```
+
+Serve with the chain, from the repo root -- a background uvicorn started from
+`certs/` dies on `ModuleNotFoundError` and serves nothing (see section 7):
+
+```
+conda run --no-capture-output -n librosa python -m uvicorn app.main:app \
+  --host 0.0.0.0 --port 8443 \
+  --ssl-keyfile certs/dev-key.pem --ssl-certfile certs/dev-chain.pem
+```
+
+On the phone: download `musiclab-ca.crt`, install it (Settings -> General ->
+VPN & Device Management), then **enable it under Settings -> General -> About ->
+Certificate Trust Settings** -- installing without that switch still fails.
+Delete the profile when finished.
+
+To hand the CA to the phone, serve *only that file* over http. Do not point a
+static server at `certs/`: it contains `ca-key.pem`, and anyone on the network can
+then take a CA the phone trusts and sign any domain with it. That mistake was made
+during this session, hence `certs/` being deleted rather than reused.
+
+`certs/` is gitignored, and worth deleting after a test session rather than
+keeping a trusted CA's private key lying around. On Android none of this applies:
+`adb reverse tcp:8000 tcp:8000` makes the phone see `http://localhost:8000`, which
+counts as a secure context.
+
+## 5b. Phone measurement: the mobile concern was unfounded
+
+Measured 2026-08-18 on the user's phone, over https on the LAN, at
+`PRESET_EXPORT` -- the same preset the export uses:
+
+```
+rendered 2:58.73 in 2.38s (75x realtime)
+rendered 2:50.42 in 3.15s (54x realtime)   # after re-uploading a different file
+```
+
+The fear was that desktop's 8.2 s cold, extrapolated 4-5x, put mobile at 30-40 s
+and past tolerable. It is off by an order of magnitude in the good direction.
+**Export-quality playback is viable on mobile**, so ADR 0010 stands as written
+and needs no mobile escape hatch.
+
+Two caveats on reading these numbers:
+
+- Not like-for-like against the desktop figure, or against each other: different
+  files, different sectioning. Treat 54-75x as a throughput band, not a
+  head-to-head.
+- **Neither is confirmed cold.** Re-uploading does not reset the engine --
+  `stretchFactory` is module state that only a page reload clears. Unless the page
+  was reloaded between them, both are warm and the cold cost is still unmeasured.
+  The worst case actually observed is 3.15 s, which is why this no longer blocks
+  anything.
+
+The transport reports these figures itself -- open the app with `?timing=1` and
+every render prints duration, wall time and throughput, and stays on screen. That
+flag also surfaces the two cases that are silent by default: a cache hit, and a
+volume-only edit that never enters the render path. Both were mistaken for a
+failed measurement before the flag existed.
+
 ## 6. Open items, roughly in priority order
 
-1. **Measure on a real phone.** Every number is desktop Chrome. First play on a
-   3-minute file is **8.2 s cold / ~4-6 s warm**; extrapolating 4-5x puts mobile at
-   30-40 s cold, likely past tolerable. This single measurement decides items 2
-   and 3.
+1. ~~**Measure on a real phone.**~~ Done -- see section 5b. Serve over https
+   (section 5a) or it cannot run at all.
 2. **Pre-warm the WASM module** on file open, so the first play does not pay WASM
-   compile + worklet registration. Small change, recovers most of the cold-start
-   gap. Agreed as worthwhile, not implemented.
-3. **Mobile fallback if 1 is bad**: switch playback to `PRESET_PREVIEW` (one
-   constant, parity lost), or revive progressive playback -- the plan for it is in
-   this session's git history, deleted after being rejected.
+   compile + worklet registration. Now low value: the whole render is 2.38 s on
+   the phone, which caps what pre-warming can recover. Worth doing only if a
+   clean cold measurement comes in far above that.
+3. ~~**Mobile fallback**~~ -- dropped. It existed for a 30-40 s mobile render
+   that does not happen. `PRESET_PREVIEW` stays in the code for the dev harness.
+   The progressive-playback plan remains in git history if it is ever needed.
 4. **Memory ceiling.** Source plus rendered timeline is ~230 MB of Float32 for
    5 minutes stereo 48 kHz. Untested and the largest unknown on mobile. Flagged in
    ADR 0001, 0009, 0010; not addressed.
