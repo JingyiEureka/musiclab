@@ -51,3 +51,41 @@ Export must also apply peak safety: Signalsmith overshoots peaks by up to
 +1.6 dB, so a source near 0 dBFS would clip. Measure the rendered buffer's true
 peak and apply a single makeup gain when it exceeds 1.0, rather than hard
 clipping as the old Python did.
+
+## Amendment, 2026-08-18: lamejs is LGPL-3.0
+
+The decision stands; this records a fact the original text left out. The Context
+above counted `ffmpeg.wasm`'s "GPL/LGPL build questions" against it without
+noting that **lamejs is itself LGPL-3.0** (`zhuker/lamejs`, npm v1.2.1). Given
+that ADR 0002 exists because a licence disqualified the first choice of stretch
+engine, the omission was worth correcting before Step 3 built on it.
+
+Accepted by the user on 2026-08-18, because LGPL is materially different from the
+licence that disqualified Rubber Band:
+
+- LGPL's copyleft covers the library and modifications to it, not the work that
+  uses it. Rubber Band's terms were full GPL or a paid commercial licence, which
+  would have reached the whole frontend. MusicLab's own code is unaffected, and
+  commercial use and charging are permitted.
+- The replaceability condition that makes LGPL awkward for compiled or bundled
+  software is satisfied by construction here: no build step, so the library is
+  served as a separate file the user can substitute.
+- A browser library *is* conveyed to the user, unlike a server-side one, so the
+  obligations do trigger. They are met by vendoring the **unminified** build
+  (LGPL asks for the form preferred for modification, which minified JavaScript
+  is not), shipping the licence texts, crediting the library, and recording in
+  `static/vendor/PATCHES.md` that it is unpatched.
+
+Two consequences for the implementation:
+
+- `encodeMp3()` in `static/js/mp3.js` is the only code that may reference lamejs,
+  so the encoder can be replaced in one file if the licence is ever ruled out.
+  Ordered fallbacks: server-side ffmpeg (not conveyed, so the question
+  disappears), `@mediabunny/mp3-encoder` (MPL-2.0, but requires the mediabunny
+  framework), WebCodecs `AudioEncoder` (no dependency, but MP3 encoding support
+  is too narrow to rely on).
+- MP3 *patents* are not a factor: they expired in 2017 with the termination of
+  the Fraunhofer/Technicolor licensing programme. Historically that, not
+  licensing, was the obstacle to shipping an MP3 encoder commercially.
+
+Detail in `design/step3-plan.md` section 1.5.
