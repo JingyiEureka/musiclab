@@ -132,6 +132,41 @@ class TestLocalExport:
             )
 
 
+class TestUploadZoneLayout:
+    """The upload zone is a <label> so the browser opens the file picker itself.
+    A label is inline by default where the old <div> was block, and the rule
+    never declared `display`, so swapping the tag silently shrank the box from
+    full width to shrink-wrapped. Measured 780px before, 302px after.
+
+    The rule now says so explicitly; this keeps it that way."""
+
+    html = read_html()
+    css = read_css()
+
+    def test_zone_is_a_label_bound_to_the_input(self):
+        assert 'for="audio-file-input"' in self.html, (
+            "without the for= binding the label does nothing and the picker "
+            "never opens, since there is no click handler any more"
+        )
+
+    def test_zone_declares_display_block(self):
+        rules = extract_css_rules(self.css, ".upload-zone")
+        assert rules, ".upload-zone rule is missing"
+        assert any("display: block" in r for r in rules), (
+            "a label is inline by default; without display:block the zone "
+            "shrink-wraps instead of filling the row"
+        )
+
+    def test_file_input_is_hidden_without_display_none(self):
+        """display:none is not reliably activated by a label on iOS, so the
+        input is kept in the layout at zero size instead."""
+        rules = extract_css_rules(self.css, '.upload-zone input[type="file"]')
+        assert rules, "the file input styling is missing"
+        body = rules[0]
+        assert "display: none" not in body
+        assert "opacity: 0" in body
+
+
 class TestPlayerTimeLabels:
     html = read_html()
     css = read_css()

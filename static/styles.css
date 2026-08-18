@@ -90,6 +90,10 @@ header pre {
 
 /* ── Upload Zone ── */
 .upload-zone {
+    /* a <label> so the file picker opens natively, but a label is inline by
+       default and this has to fill the row the way the old <div> did */
+    display: block;
+    position: relative;   /* contains the visually hidden input */
     border: 1px solid var(--border);
     background: var(--surface);
     padding: 24px;
