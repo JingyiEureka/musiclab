@@ -145,12 +145,10 @@ document.addEventListener('DOMContentLoaded', () => {
         banner.show('fail', 'this page needs https - speed and skip edits cannot be played over http.');
     }
 
-    // Upload zone
+    // Upload zone. No click handler: the zone is a <label>, so the browser
+    // opens the picker itself. Scripting that click broke on iOS Chrome, and
+    // setBusy already disables the input, which stops the label too.
     const zone = document.getElementById('upload-zone');
-    zone.addEventListener('click', () => {
-        if (state.isBusy) return;
-        document.getElementById('audio-file-input').click();
-    });
     zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
     zone.addEventListener('drop', e => {

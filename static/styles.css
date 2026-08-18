@@ -186,8 +186,16 @@ header pre {
     color: var(--dim);
 }
 
+/* Visually hidden rather than display:none. A display:none input is not
+   reliably activated by its label on iOS, so it stays in the layout at zero
+   size instead. */
 .upload-zone input[type="file"] {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
 }
 
 /* ── Player ── */

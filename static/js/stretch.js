@@ -104,7 +104,7 @@ export function buildTimeMap(segments, totalDuration) {
         }
         sourceStart = end;
     });
-·    if (kept.length === 0) {
+    if (kept.length === 0) {
         // tagged so the transport can tell this apart from a render that broke
         const err = new Error('all sections are skipped, nothing to render');
         err.code = 'all-skipped';

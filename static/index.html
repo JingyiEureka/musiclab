@@ -7,7 +7,7 @@
     <title>MusicLab &mdash; music editing made easy</title>
     <meta name="description"
         content="MusicLab lets you adjust the playback speed of audio sections independently and export the result as an MP3." />
-    <link rel="stylesheet" href="/static/styles.css?v=17" />
+    <link rel="stylesheet" href="/static/styles.css?v=18" />
 </head>
 
 <body>
@@ -27,12 +27,15 @@
         <div class="divider"></div>
         <div class="section">
             <div class="section-title">Audio preview <span class="player-label" id="player-filename"></span></div>
-            <div class="upload-zone" id="upload-zone">
+            <!-- A label, not a div: clicking it opens the picker natively. iOS
+                 Chrome refuses a scripted .click() on a hidden file input, so
+                 the old handler silently did nothing there. -->
+            <label class="upload-zone" id="upload-zone" for="audio-file-input">
                 <input type="file" id="audio-file-input"
                     accept="audio/*,video/*,.mp3,.wav,.flac,.ogg,.oga,.opus,.m4a,.aac,.aiff,.aif,.mp4,.mov,.webm" />
                 <span class="hint" id="upload-hint">Drop or select audio / video</span>
                 <pre id="upload-pet"></pre>
-            </div>
+            </label>
             <div id="upload-error" class="upload-error"></div>
             <div id="player-section">
                 <div class="player-row">
