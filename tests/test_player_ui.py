@@ -92,6 +92,46 @@ class TestSecureContextGuard:
         )
 
 
+class TestLocalExport:
+    """Export encodes in the browser and never uploads (step 3).
+
+    A module test can pass while the product still takes the old path, which is
+    the mistake TestSinglePlaybackPath exists to catch. These assert the wiring,
+    not the encoder."""
+
+    def read_js(self, name):
+        with open(os.path.join(STATIC, "js", name), "r") as f:
+            return f.read()
+
+    def test_export_does_not_upload(self):
+        export_js = self.read_js("export.js")
+        for gone in ("/upload-audio/", "check-status", "pollStatus", "submitJob"):
+            assert gone not in export_js, f"{gone} should be gone from the export path"
+
+    def test_export_uses_the_playback_render(self):
+        """Parity rests on export encoding the buffer getTimeline() cached for
+        the transport, rather than rendering its own."""
+        export_js = self.read_js("export.js")
+        assert "getTimeline" in export_js
+        assert "renderTimeline" not in export_js
+
+    def test_only_mp3_module_knows_the_encoder(self):
+        """The encoder is swappable if lamejs's LGPL is ever ruled out, which
+        only holds while nothing else names it (ADR 0006 amendment)."""
+        for name in os.listdir(os.path.join(STATIC, "js")):
+            if not name.endswith(".js") or name == "mp3.js":
+                continue
+            with open(os.path.join(STATIC, "js", name), "r") as f:
+                assert "lamejs" not in f.read(), f"{name} references lamejs directly"
+
+    def test_vendored_encoder_ships_its_licence(self):
+        vendor = os.path.join(os.path.dirname(STATIC), "static", "vendor")
+        for required in ("lamejs.js", "lamejs-LICENSE.txt", "LGPL-3.0.txt"):
+            assert os.path.exists(os.path.join(vendor, required)), (
+                f"{required} missing; LGPL requires shipping the licence"
+            )
+
+
 class TestPlayerTimeLabels:
     html = read_html()
     css = read_css()

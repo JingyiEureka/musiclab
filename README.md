@@ -78,3 +78,20 @@ docker compose pull && docker compose up -d
 ```
 conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest -v
 ```
+
+## Third-party libraries
+
+Audio is stretched and encoded in the browser by two vendored libraries in
+`static/vendor/`, both loaded lazily and used unbundled:
+
+- **[Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch)**
+  — time stretching. MIT. Patched; see `static/vendor/PATCHES.md`.
+- **[lamejs](https://github.com/zhuker/lamejs)** — MP3 encoding, a JavaScript
+  port of **[LAME](https://lame.sourceforge.net)**. LGPL-3.0, vendored
+  unmodified. Licence texts accompany the code as `lamejs-LICENSE.txt`,
+  `LGPL-3.0.txt`, and `GPL-3.0.txt`.
+
+LAME's licence asks for acknowledgement and a link, so the credit above is a
+condition of use rather than a courtesy. Neither library's licence reaches
+MusicLab's own code; see the amendment to
+[ADR 0006](docs/adr/0006-lamejs-instead-of-ffmpeg-wasm.md) for the reasoning.

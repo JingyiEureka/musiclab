@@ -1,4 +1,37 @@
-# Vendored library patches
+# Vendored libraries: sources, licences, and patches
+
+| File | Upstream | Licence | Patched |
+|---|---|---|---|
+| `signalsmith-stretch.mjs` | npm `signalsmith-stretch@1.3.2` | MIT | **yes** -- two patches below |
+| `lamejs.js` | npm `lamejs@1.2.1` (`lame.all.js`) | LGPL-3.0 | no |
+
+Licence texts live beside the code: `lamejs-LICENSE.txt`, `LGPL-3.0.txt`,
+`GPL-3.0.txt`. Signalsmith is MIT and needs only attribution.
+
+## lamejs.js -- unpatched
+
+Vendored **unmodified**, and it must stay that way: LAME's licence requires any
+modification to be released back to the LAME project under the LGPL. If a patch
+ever becomes necessary, document it here the way the Signalsmith patches are
+documented, and publish it upstream.
+
+The unminified `lame.all.js` (530 KB) is vendored rather than `lame.min.js`
+(156 KB), because the LGPL asks for the form preferred for making modifications.
+It is loaded lazily by `static/js/mp3.js` on the first export, so it is not on any
+page-load path. Note ADR 0006 estimated "~50 KB" for lamejs; the real figures are
+the ones above.
+
+Only `static/js/mp3.js` may reference this file or the `lamejs` global, so the
+encoder can be replaced in one place (ADR 0006 amendment, design decision 8 in
+`design/step3-plan.md`).
+
+Loading is by injected `<script>`, not `import`: the file is a classic script
+that defines a global `lamejs` function and calls it to attach
+`lamejs.Mp3Encoder`. It is not an ES module.
+
+Attribution is a licence condition, not a courtesy -- LAME's `LICENSE` asks for
+acknowledgement and a link to <https://lame.sourceforge.net>. That is why the
+README credits it.
 
 ## signalsmith-stretch.mjs
 

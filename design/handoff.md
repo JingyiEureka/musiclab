@@ -1,7 +1,8 @@
 # Handoff: client-side DSP refactor
 
-Session of 2026-08-01 / 08-02. Branch `restructure-layout`. **Nothing is
-committed** -- see section 5 before doing anything else.
+Sessions of 2026-08-01 / 08-02 / 08-18. Branch `restructure-layout`, **not
+pushed and not merged to `main`**. Steps 1-3 are committed; step 4 is the
+remaining work. Section 6 lists what is open.
 
 ## 1. Where the refactor stands
 
@@ -13,11 +14,13 @@ Original four-step plan, plus transport work that emerged from testing:
 | 1 | Vendor the stretch engine; single-rate offline render | **done** |
 | 2 | Full timeline: time map, per-section volume, seam fades, UI | **done** |
 | -- | Transport plays the rendered timeline (ADR 0009, 0010) | **done** |
-| 3 | MP3 encode + local download; chunked export for long files | **not started** |
+| 3 | MP3 encode + local download, no server round trip | **done** |
 | 4 | Delete `process_audio`, trim `requirements.txt`, update `ARCHITECTURE.md` | **not started** |
 
-Verification: **30 browser tests** (5 single-rate, 11 timeline, 14 data model) via
-`static/dev/stretch-test.html`, plus **61 pytest**. All green at session end.
+Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
+7 mp3) via `static/dev/stretch-test.html`, plus **68 pytest**. All green.
+Export was also driven end to end through the real UI -- see
+`design/step3-plan.md` section 5.1.
 
 ## 2. What the app does now
 
@@ -26,9 +29,19 @@ Verification: **30 browser tests** (5 single-rate, 11 timeline, 14 data model) v
   duration (0-1000 ms) and curve (equal-power / linear / smooth), with a shaded
   ramp indicator in the section lane.
 - **`[ Play ]` / `[ |< ]` play the rendered timeline**, so playback matches the
-  export exactly. Volume-only edits skip rendering and use the live gain schedule.
+  export exactly. Volume-only edits still skip rendering and use the live gain
+  schedule -- which now ramps each boundary with the configured seam, built from
+  the same `fadeCurve` the render uses. It used to step, so a volume-only edit
+  played differently from how it exported and ignored the seam control entirely
+  (`design/step3-plan.md` section 2.1).
 - **No `[ Preview ]` button.** Retired; there is one playback path.
-- Export still goes through the server (`POST /upload-audio/`). That is Step 3.
+- **Export is local.** `[ Export ]` encodes the cached playback render to MP3 at
+  192 kbps with lamejs and saves it. Nothing is uploaded. The mp3 is the audio
+  that was auditioned, because both come from the same `getTimeline()` buffer.
+- The only server call left is `POST /extract-audio/`, for video containers
+  Safari cannot decode. That one stays (ADR 0001).
+- `/upload-audio/`, `/check-status/` and `/download/` are now unreachable from
+  the UI but still exist. Deleting them is Step 4.
 
 ## 3. Decisions locked (do not re-litigate)
 
@@ -43,10 +56,17 @@ All in `docs/adr/`. Read `docs/adr/README.md` first. The load-bearing ones:
   audible difference, so they get no UI.
 - **0010** One playback path, rendered at the export preset.
 
-## 4. Two vendor patches -- re-apply on upgrade
+## 4. Vendored libraries
 
-`static/vendor/signalsmith-stretch.mjs` is patched. Both are documented with
-rationale in `static/vendor/PATCHES.md`:
+`static/vendor/PATCHES.md` is the record: it opens with a table of both
+dependencies and their licences, and documents every patch.
+
+**lamejs** (LGPL-3.0) is vendored **unmodified and must stay that way** -- LAME's
+licence requires modifications to be released back upstream. Only
+`static/js/mp3.js` may reference it, which is what keeps the encoder replaceable
+if the licence is ever ruled out. `tests/test_player_ui.py` enforces both.
+
+**signalsmith-stretch.mjs** (MIT) is patched twice. Re-apply on upgrade:
 
 1. **`setTimeMap`** -- `schedule()` cannot pre-load a multi-entry time map (it
    prunes relative to each call's `outputTime`, keeping at most two entries). Test
@@ -55,43 +75,27 @@ rationale in `static/vendor/PATCHES.md`:
 2. **Cache the worklet blob URL** -- every offline render created a new context and
    leaked another ~111 KB blob URL.
 
-## 5. Uncommitted work
+## 5. Commit history and how to check the tree
 
-17 modified/deleted, 4 untracked paths. Per `CLAUDE.md`, before committing:
+```
+2cb5b0a  Correct the production TLS note in the handoff
+f92de83  Make client-side rendering work off the dev machine   (secure context)
+181704a  Move audio processing into the browser (steps 1-2)
+```
+
+Per `CLAUDE.md`, before committing:
 
 ```
 conda run -n librosa ruff check . && conda run -n librosa ruff format --check . \
   && conda run -n librosa python -m pytest -v
 ```
 
-`CLAUDE.md` also says to delete `design/` before committing. Note that would
-remove `design/step2-plan.md` **and this file**. The ADRs in `docs/adr/` are *not*
-development artifacts and should be committed -- they exist precisely so the
-reasoning survives `design/` being deleted.
+The browser suite is not in that command and has to be run separately -- start
+the server, open `static/dev/stretch-test.html`, or drive
+`window.runStretchTests` / `runTimelineTests` / `runModelTests` / `runMp3Tests`
+over CDP (section 7).
 
-Files:
-
-```
-M  static/dev/stretch-test.html      test harness (3 suites + cut A/B tool)
-M  static/index.html                 preview button removed; styles.css?v=17
-M  static/js/config.js               SEAM_* constants
-M  static/js/main.js                 seam events, newSegment/normalizeSegments
-M  static/js/player.js               renders the timeline; one playback path
-M  static/js/segments.js             seam model, UI, mergeWithNext fix
-M  static/js/state.js                playMap/playOutputStart; source-time getCurrentTime
-M  static/js/stretch.js              engine: time map, curves, mappings, peak safety
-M  static/js/ui.js, session.js       preview button refs removed
-M  static/js/report.js               seam column
-M  static/js/wav.js                  WAV encoder extracted from preview.js
-M  static/styles.css                 seam control + lane ramp
-M  static/vendor/signalsmith-stretch.mjs   two patches
-M  tests/test_player_ui.py           TestSinglePlaybackPath guard
-D  static/js/preview.js              retired
-?? static/js/timeline.js             render cache for the transport
-?? static/vendor/PATCHES.md          patch documentation
-?? docs/adr/                         10 ADRs + index
-?? design/                           step 2 plan + this handoff
-```
+`design/` and `docs/adr/` are committed deliberately; `CLAUDE.md` explains why.
 
 ## 5a. The app now requires a secure context
 
@@ -223,11 +227,16 @@ failed measurement before the flag existed.
 3. ~~**Mobile fallback**~~ -- dropped. It existed for a 30-40 s mobile render
    that does not happen. `PRESET_PREVIEW` stays in the code for the dev harness.
    The progressive-playback plan remains in git history if it is ever needed.
-4. **Memory ceiling.** Source plus rendered timeline is ~230 MB of Float32 for
-   5 minutes stereo 48 kHz. Untested and the largest unknown on mobile. Flagged in
-   ADR 0001, 0009, 0010; not addressed.
-5. **Step 3**: MP3 via `lamejs` (ADR 0006 -- explicitly *not* ffmpeg.wasm), chunked
-   so a long file does not need one monolithic buffer. Also apply peak safety.
+4. **Memory ceiling -- now the only untested risk.** Source plus rendered
+   timeline is ~230 MB of Float32 for 5 minutes stereo 48 kHz, and **export is
+   where it peaks**, since the encoder output lives alongside both. The encoder
+   itself is incremental and adds no full-length copy, so the ceiling is
+   unchanged from playback -- but it has still only been exercised at 3 minutes.
+   Try the longest variation available, on the phone. Flagged in ADR 0001, 0009,
+   0010.
+5. ~~**Step 3**~~ done. `static/js/mp3.js` wraps lamejs; `design/step3-plan.md`
+   has the detail, including why lamejs's LGPL-3.0 is acceptable here and what
+   would need to change if it stopped being (ADR 0006 amendment).
 6. **Step 4**: delete `process_audio`, drop librosa/numpy/soundfile from
    `requirements.txt` (keep ffmpeg for video extraction), update `ARCHITECTURE.md`
    -- its diagrams still show the upload/poll pipeline, and known issues 1 and 3

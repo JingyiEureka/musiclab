@@ -54,11 +54,13 @@ function shapeGain(kind, from, to, p) {
     return from + (to - from) * p;
 }
 
-function curvePoints(seconds) {
+export function curvePoints(seconds) {
     return Math.max(2, Math.min(CURVE_MAX_POINTS, Math.round(seconds * CURVE_POINTS_PER_SEC)));
 }
 
-function fadeCurve(kind, points, from, to) {
+// Exported so the live gain schedule can build the same ramp the render bakes
+// in. One definition of each curve, or the two paths drift apart (step 3 plan 2.1).
+export function fadeCurve(kind, points, from, to) {
     const c = new Float32Array(points);
     const last = points - 1;
     for (let i = 0; i < points; i++) c[i] = shapeGain(kind, from, to, i / last);

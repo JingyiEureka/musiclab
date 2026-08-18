@@ -236,103 +236,137 @@ Two ways to fix it, and they are not equivalent:
 ### 4A. Vendor lamejs
 
 - [x] Licence settled in 1.5: LGPL-3.0 accepted.
-- [ ] Vendor the **unminified** build as `static/vendor/lamejs.js`, unmodified.
-      Not the minified one: LGPL wants the form preferred for making
-      modifications (1.5.1). It is lazy-loaded only during an export, so the size
-      is not on any page-load path.
-- [ ] `static/vendor/lamejs-LICENSE.txt` -- the LGPL-3.0 text, plus the GPL-3.0
-      text it incorporates by reference.
-- [ ] Record in `static/vendor/PATCHES.md` that lamejs is vendored **unpatched**,
-      alongside its licence. That file becomes the one place stating both
-      dependencies and their terms: Signalsmith MIT, lamejs LGPL-3.0.
-- [ ] An OSS notices line in the UI or README crediting both libraries. Required
-      for lamejs, courteous for Signalsmith.
-- [ ] It is UMD, not an ES module, so `import` will not work directly. Load it
-      lazily the way `stretch.js` loads its engine -- a cached dynamic
-      `<script>` injection resolving to `window.lamejs` -- rather than adding a
-      blocking tag to `index.html` that every page load pays for.
+- [x] Vendored `lame.all.js` (530 KB, unminified) as `static/vendor/lamejs.js`,
+      unmodified. Tarball shasum checked against the npm registry.
+      **ADR 0006's "~50 KB" was wrong**: minified is 156 KB, unminified 530 KB.
+- [x] `lamejs-LICENSE.txt` (upstream notice verbatim, plus provenance),
+      `LGPL-3.0.txt`, `GPL-3.0.txt`.
+- [x] `PATCHES.md` now opens with a table of both dependencies and their
+      licences, and states that lamejs is unpatched and must stay that way.
+- [x] README "Third-party libraries" section. LAME's licence asks for
+      acknowledgement and a link, so this is a condition, not a courtesy.
+- [x] Loaded by injected `<script>`, resolved with `new URL(..., import.meta.url)`
+      -- a script `src` is document-relative, which would have broken the dev
+      harness at a different depth.
 
 ### 4B. Encoder module (`static/js/mp3.js`)
 
-- [ ] `encodeMp3(buffer, {kbps, onProgress})` -> `Blob`.
-- [ ] Lazy-load the vendored encoder on first call; cache the handle.
-- [ ] Channels: `Math.min(2, buffer.numberOfChannels)`, matching
-      `renderTimeline` and `audioBufferToWav`.
-- [ ] Walk the buffer in 1152-sample frames (lamejs's granule size), converting
-      Float32 to Int16 per chunk, clamping to +/-1 first.
-- [ ] Process many frames per turn, then `await` a macrotask, so the UI paints.
-      Tune the batch so a turn is a few tens of milliseconds.
-- [ ] `onProgress(0..1)` per batch.
-- [ ] Collect `encodeBuffer()` output plus the final `flush()` into one `Blob`
-      of type `audio/mpeg`.
-- [ ] Do **not** touch levels: `applyPeakSafety` already ran inside the render.
+- [x] `encodeMp3(buffer, {kbps, onProgress})` -> `Blob`.
+- [x] Lazy-loaded and cached; a failed load clears the cache so a later export
+      can retry.
+- [x] Channels: `Math.min(2, buffer.numberOfChannels)`.
+- [x] 1152-sample frames, Float32 -> Int16 per chunk, clamped. One reused
+      scratch array, so no full-length second copy; a short final chunk gets its
+      own array rather than carrying stale samples.
+- [x] `FRAMES_PER_TURN = 48`, **set from measurement, not guessed**. An initial
+      200 blocked the main thread for a median of 169 ms per turn (max 268 ms).
+      48 gives a median of 44 ms (max 114 ms) and costs 12% throughput:
+      26.5x -> 23.6x realtime on an M-series Mac.
+- [x] `setTimeout`, not a microtask -- a resolved promise does not let the
+      browser paint.
+- [x] `onProgress(0..1)` per batch, plus a final 1.
+- [x] One `Blob` of `audio/mpeg` from the chunks plus `flush()`.
+- [x] Levels untouched. Verified by test E6: a 0.99-amplitude source rendered at
+      1.25x comes back at peak 0.9702 with the render's makeup gain intact.
 
 ### 4C. Rewire `export.js`
 
-- [ ] `runAndExport()`: keep the guards, then `getTimeline()`, then
-      `encodeMp3()`, then `downloadBlob()`.
-- [ ] Show the render phase and the encode phase distinctly in the banner, since
-      the render has no progress and the encode does.
-- [ ] Report download unchanged, including the 800 ms stagger and the manual
-      fallback link.
-- [ ] Failure path: report the real error the way `player.js` now does, rather
-      than a fixed string -- and reuse the `all-skipped` tag from `stretch.js`
-      instead of the separate pre-check, so there is one definition of "nothing
-      to export".
-- [ ] `setBusy(false)` on every exit, including the error paths.
+- [x] `runAndExport()`: guards, `getTimeline()`, `encodeMp3()`, `downloadBlob()`.
+- [x] Banner reads `rendering...` then `encoding mp3...`; the bar belongs to the
+      encode, which is the phase that can report progress.
+- [x] Report download unchanged, stagger and fallback link included.
+- [x] Errors reported verbatim; the `all-skipped` tag replaces the separate
+      pre-check, so "nothing to export" has one definition.
+- [x] `setBusy(false)` on every exit.
+- [x] Filename `{base}_{YYYYMMDD_HHMM}.mp3`. `exportBaseName()` and
+      `reportStamps()` are now exported from `report.js` so the mp3 and its
+      report are named from one definition.
 
 ### 4D. Volume-only parity (from 2.1)
 
-- [ ] Apply whichever of (a)/(b) the user picks.
-- [ ] If (a): export `shapeGain` from `stretch.js` and build the ramp in
-      `applyGainSchedule` from it, so the curve shapes have one definition.
-- [ ] The ramp must be clamped the way `clampedHalf` clamps, or two close
-      boundaries will produce overlapping automation on one `AudioParam` --
-      the failure mode the two-gain-node split exists to avoid.
+- [x] (a) applied. `stretch.js` now exports `fadeCurve` and `curvePoints`, so
+      `applyGainSchedule` builds the same curve the render bakes in -- the whole
+      curve is shared, not just `shapeGain`, so point density matches too.
+- [x] `rampHalf()` in `player.js` mirrors `clampedHalf()`, so adjacent ramps
+      cannot overlap on one `AudioParam`.
+- [x] A ramp already straddling the playhead is truncated rather than skipped.
+      Safe because the curve opens at the value currently scheduled, so there is
+      no step at the join.
 
 ### 4E. Dead client code
 
-- [ ] `submitJob`, `pollStatus`, `fetchWithRetry` lose their only callers. Delete
-      them in this step; leaving them implies a server path that no longer runs.
-- [ ] `networkErrorMessage` is still used by `/extract-audio/` for video, so it
-      stays. Confirm before deleting anything.
-- [ ] `CONFIG.POLLING_INTERVAL_MS` and the `ERROR_MESSAGES` keys that only
-      described server failures (`encode_failed`, `invalid_params`,
-      `server_error`) become unused. Remove the unused ones.
-- [ ] Leave the server endpoints alone. `/upload-audio/`, `/check-status/`,
-      `/download/` are Step 4's job; `/extract-audio/` is kept permanently
-      (ADR 0001).
+- [x] `submitJob`, `pollStatus`, `fetchWithRetry` deleted.
+- [x] `networkErrorMessage` **also** deleted. The plan assumed video extraction
+      used it; it does not -- `extractAudioOnServer` throws its own message. That
+      assumption was checked rather than trusted.
+- [x] `CONFIG.POLLING_INTERVAL_MS` and all of `ERROR_MESSAGES` deleted: every key
+      described a server failure mode that no longer exists.
+- [x] Server endpoints untouched, as Step 4's job.
 
 ## 5. Verification
 
-Add an MP3 suite to `static/dev/stretch-test.html`, following the existing
-pattern where each section carries a **different tone**, so a passing test proves
-each section survived encoding rather than only that the duration is right.
+Seven tests added to `static/dev/stretch-test.html` as `runMp3Tests`, following
+the existing pattern where each section carries a **different tone**: duration
+alone cannot prove a render is right, because a wrong render is still the length
+we asked for. Measured values, not just PASS:
 
-- [ ] Encode a known tone; decode the result with `decodeAudioData` and confirm
-      frequency and RMS survive within MP3's tolerance.
-- [ ] Duration within one frame of the render's, allowing for the encoder's
-      priming samples.
-- [ ] A three-section timeline at three different tones: each tone present at the
-      expected output time.
-- [ ] Mono source encodes as 1 channel and stays audible.
-- [ ] Progress callback reaches 1.0 and is monotonic.
-- [ ] Peak safety survives: a source deliberately near 0 dBFS does not come back
-      clipped.
-- [ ] **Parity:** encode from `getTimeline()`'s buffer and confirm it is the same
-      object the transport played, not a re-render. This is the claim ADR 0010
-      rests on, so it should be a test and not a comment.
-- [ ] A UI-level guard in `tests/test_player_ui.py`, in the spirit of
-      `TestSinglePlaybackPath`: assert the export path no longer references
-      `/upload-audio/`. Module tests passing while a feature is unreachable is a
-      mistake this project has already made once.
+| Test | Measured |
+|---|---|
+| E1 440 Hz tone survives encoding | 440.0 Hz, rms 0.343, 72576 bytes (3 s @ 192 kbps = 72000 expected) |
+| E2 duration within 50 ms of source | +24 ms (encoder priming plus frame padding) |
+| E3 three sections keep three tones | 330 / 550 / 881 |
+| E4 mono encodes as 1 channel | 1 ch, rms 0.343 |
+| E5 progress monotonic, reaches 1 | monotonic, last value 1 |
+| E6 hot source not clipped | peak 0.9702, render peak 1.0000 -- makeup gain intact |
+| E7 export encodes what playback played | same buffer object |
 
-Also measure, and record in `handoff.md`:
+- [x] All seven pass. Full suite is now **37 browser tests** (5 single-rate, 11
+      timeline, 14 data model, 7 mp3) and **68 pytest**.
+- [x] `TestLocalExport` in `tests/test_player_ui.py`: export references no
+      `/upload-audio/`, `submitJob` or `pollStatus`; it uses `getTimeline()` and
+      not its own `renderTimeline`; **no module outside `mp3.js` names lamejs**
+      (which is what keeps the encoder swappable); the licence files exist.
 
-- [ ] Encode time for a 3-minute file, desktop and phone.
-- [ ] Peak memory for the longest variation available, since **the memory
-      ceiling is the last untested risk** and export is where it peaks: source
-      plus render plus encoder output all live at once.
+### 5.1 End to end through the real UI
+
+Module tests passing while a feature is unreachable is a mistake this project has
+already made, so the export was also driven through the actual product: a 12 s
+three-tone WAV fed to the real file input via CDP, split into three sections with
+the middle one at 0.5x, then the real `[ Export ]` button clicked.
+
+| Check | Expected | Got |
+|---|---|---|
+| Output duration (4 + 8 + 4) | 16 s | **16.04 s** |
+| Tone per section | 330 / 550 / 880 | **330 / 552 / 882** |
+| Size (16 s @ 192 kbps) | ~384000 | 384940 |
+| Filename | report convention | `e2e-input_20260818_2250.mp3` |
+| Page errors | none | none |
+
+The pitches staying at 330/550/880 rather than dropping with the speed is what
+proves this is time stretching and not resampling.
+
+### 5.2 Measurements
+
+Encode throughput on an M-series Mac, 60 s stereo 48 kHz at 192 kbps:
+
+| `FRAMES_PER_TURN` | throughput | median block | max block |
+|---|---|---|---|
+| 200 (first attempt) | 26.5x realtime | 169 ms | 268 ms |
+| **48 (shipped)** | **23.6x realtime** | **44 ms** | **114 ms** |
+
+The batch size was set from this, not guessed -- the original code comment
+claimed "tens of milliseconds" and was wrong by 4x. Trading 12% throughput for a
+main thread that keeps painting is the right side of that deal.
+
+Extrapolated, a 3-minute export is roughly 7.6 s of encoding on desktop, on top
+of 2.4-3.2 s of rendering measured on the phone in `handoff.md` section 5b.
+
+Still outstanding:
+
+- [ ] Encode time on the phone. Desktop only so far.
+- [ ] **Peak memory for the longest variation available.** The last untested risk,
+      and export is where it peaks: source, render, and encoder output all live at
+      once. `?timing=1` reports render time; memory needs a real device.
 
 ## 6. Out of scope
 

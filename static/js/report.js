@@ -60,8 +60,14 @@ export function buildReportText(exportedAt) {
     return lines.join('\n');
 }
 
+// The uploaded filename minus its extension. Exported so the mp3 and the report
+// are named from one definition and sort next to each other.
+export function exportBaseName() {
+    return (state.audioFile ? state.audioFile.name : 'project').replace(/\.[^.]+$/, '');
+}
+
 // Two-digit padded date parts for filename + in-report timestamps.
-function reportStamps() {
+export function reportStamps() {
     const d = new Date();
     const p = n => String(n).padStart(2, '0');
     const ymd = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
@@ -77,7 +83,7 @@ function reportStamps() {
 // at submit time; only the export timestamp is stamped now.
 export function downloadReport(body) {
     const stamps = reportStamps();
-    const base = (state.audioFile ? state.audioFile.name : 'project').replace(/\.[^.]+$/, '');
+    const base = exportBaseName();
     const blob = new Blob([body.replace('@EXPORT_TIME@', stamps.human)], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

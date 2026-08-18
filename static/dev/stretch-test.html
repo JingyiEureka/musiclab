@@ -33,6 +33,8 @@
 <div id="timeline-results"></div>
 <h2>data model (step 2)</h2>
 <div id="model-results"></div>
+<h2>mp3 export (step 3)</h2>
+<div id="mp3-results"></div>
 <div id="log"></div>
 
 <!-- segments.js writes into these; present so renderSegments() can run here -->
@@ -68,6 +70,8 @@ import {
     outputToSource, sourceToOutput, needsRender,
 } from '../js/stretch.js';
 import { audioBufferToWav, downloadBlob } from '../js/wav.js';
+import { encodeMp3 } from '../js/mp3.js';
+import { getTimeline, invalidateTimeline } from '../js/timeline.js';
 import { state } from '../js/state.js';
 import {
     newSegment, normalizeSegments, clampSeamMs, mergeWithNext, addSegment,
@@ -830,8 +834,139 @@ document.getElementById('ab-save').addEventListener('click', () => {
 document.getElementById('run').addEventListener('click', runTests);
 document.getElementById('run-timeline').addEventListener('click', runTimelineTests);
 document.getElementById('run-model').addEventListener('click', runModelTests);
+// ── mp3 export tests (step 3) ───────────────────────────────────
+// Decode what the encoder produced and measure it, rather than trusting a byte
+// count. MP3 is lossy and adds priming samples, so tolerances are looser than
+// the render tests - but a wrong tone or a missing section still fails.
+async function decodeBlob(blob) {
+    const ctx = new OfflineAudioContext(1, 1, 48000);
+    return ctx.decodeAudioData(await blob.arrayBuffer());
+}
+
+const MP3_TESTS = [
+    {
+        name: 'E1 a 440 Hz tone survives encoding',
+        async run() {
+            const src = sineBuffer({ freq: 440, seconds: 3, channels: 2 });
+            const blob = await encodeMp3(src);
+            const out = await decodeBlob(blob);
+            const f = regionFreq(out, 1, 2);
+            const r = windowRms(out, 1.5, 0.2);
+            return {
+                pass: Math.abs(f - 440) / 440 < 0.02 && r > 0.1 && !hasNaN(out.getChannelData(0)),
+                info: `${f.toFixed(1)} Hz (want 440), rms ${r.toFixed(3)}, ${blob.size} bytes`,
+            };
+        },
+    },
+    {
+        name: 'E2 duration within 50 ms of the source',
+        async run() {
+            const src = sineBuffer({ freq: 440, seconds: 3, channels: 2 });
+            const out = await decodeBlob(await encodeMp3(src));
+            // encoder priming plus frame padding, so exact equality is wrong to expect
+            const d = out.duration - src.duration;
+            return { pass: Math.abs(d) < 0.05, info: `${d >= 0 ? '+' : ''}${(d * 1000).toFixed(0)} ms` };
+        },
+    },
+    {
+        name: 'E3 three sections keep three distinct tones',
+        async run() {
+            // duration alone cannot prove this: a wrong render is still the
+            // length we asked for. Different tones can.
+            const src = multiToneBuffer([330, 550, 880], 1.5);
+            const out = await decodeBlob(await encodeMp3(src));
+            const got = [regionFreq(out, 0.4, 1.1), regionFreq(out, 1.9, 2.6), regionFreq(out, 3.4, 4.1)];
+            const want = [330, 550, 880];
+            const ok = got.every((f, i) => Math.abs(f - want[i]) / want[i] < 0.03);
+            return { pass: ok, info: got.map(f => f.toFixed(0)).join(' / ') + ' (want 330 / 550 / 880)' };
+        },
+    },
+    {
+        name: 'E4 mono source encodes as 1 channel and stays audible',
+        async run() {
+            const src = sineBuffer({ freq: 440, seconds: 2, channels: 1 });
+            const out = await decodeBlob(await encodeMp3(src));
+            const r = windowRms(out, 1, 0.2);
+            return {
+                pass: out.numberOfChannels === 1 && r > 0.1,
+                info: `${out.numberOfChannels} ch (want 1), rms ${r.toFixed(3)}`,
+            };
+        },
+    },
+    {
+        name: 'E5 progress is monotonic and reaches 1',
+        async run() {
+            const seen = [];
+            await encodeMp3(sineBuffer({ freq: 440, seconds: 12, channels: 2 }), {
+                onProgress: p => seen.push(p),
+            });
+            const monotonic = seen.every((p, i) => i === 0 || p >= seen[i - 1]);
+            return {
+                pass: seen.length > 1 && monotonic && seen[seen.length - 1] === 1,
+                info: `${seen.length} calls, last ${seen[seen.length - 1]}, monotonic ${monotonic}`,
+            };
+        },
+    },
+    {
+        name: 'E6 a hot source does not come back clipped',
+        async run() {
+            // peak safety runs inside renderTimeline; this checks the encoder
+            // does not undo it and that a near-0 dBFS source stays clean
+            const src = sineBuffer({ freq: 440, seconds: 2, channels: 2, amp: 0.99 });
+            const rendered = await renderTimeline(src, [newSegment({ endTime: null, speed: 1.25 })]);
+            const out = await decodeBlob(await encodeMp3(rendered));
+            const p = peak(out.getChannelData(0));
+            return { pass: p <= 1.02, info: `peak ${p.toFixed(4)} (render peak ${peak(rendered.getChannelData(0)).toFixed(4)})` };
+        },
+    },
+    {
+        name: 'E7 export encodes the buffer the transport played',
+        async run() {
+            // The parity claim ADR 0010 rests on: getTimeline() hands out one
+            // cached buffer, so playback and export cannot diverge.
+            state.totalDuration = 6;
+            state.audioBuffer = multiToneBuffer([440, 660], 3);
+            state.segments = [
+                newSegment({ endTime: 3, speed: 1.25 }),
+                newSegment({ endTime: null, speed: 1 }),
+            ];
+            invalidateTimeline();
+            const first = await getTimeline();
+            const second = await getTimeline();
+            return {
+                pass: first.buffer === second.buffer,
+                info: first.buffer === second.buffer ? 'same buffer object' : 're-rendered',
+            };
+        },
+    },
+];
+
+async function runMp3Tests() {
+    const rows = [];
+    for (const t of MP3_TESTS) {
+        try {
+            const t0 = performance.now();
+            const r = await t.run();
+            rows.push({ name: t.name, pass: r.pass, info: r.info, ms: Math.round(performance.now() - t0) });
+        } catch (e) {
+            rows.push({ name: t.name, pass: false, info: 'threw: ' + e.message, ms: 0 });
+            log('ERROR ' + t.name + ': ' + (e.stack || e.message));
+        }
+    }
+    document.getElementById('mp3-results').innerHTML = `
+        <table>
+            <tr><th>test</th><th>measured</th><th>ms</th><th>result</th></tr>
+            ${rows.map(r => `<tr>
+                <td>${r.name}</td><td>${r.info}</td><td>${r.ms}</td>
+                <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'}</td>
+            </tr>`).join('')}
+        </table>`;
+    return rows;
+}
+
 window.runTimelineTests = runTimelineTests;
 window.runModelTests = runModelTests;
+window.runMp3Tests = runMp3Tests;
 
 document.getElementById('play').addEventListener('click', async () => {
     if (!lastRender) return log('nothing rendered yet');

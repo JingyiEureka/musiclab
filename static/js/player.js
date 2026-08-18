@@ -5,7 +5,8 @@
 // buffer with a live gain schedule, which is instant and already accurate.
 import { state, getCurrentTime } from './state.js';
 import { getWaveWidth, updatePlayheadUI } from './waveform.js';
-import { needsRender, sourceToOutput } from './stretch.js';
+import { needsRender, sourceToOutput, fadeCurve, curvePoints } from './stretch.js';
+import { SEAM_DEFAULT } from './config.js';
 import { getTimeline } from './timeline.js';
 import { showNotification, formatTime } from './ui.js';
 
@@ -46,25 +47,59 @@ export function togglePlay() {
 // Hear the per-segment volume settings during raw playback by scheduling gain
 // changes at the segment boundaries ahead of the playhead. Not used once the
 // timeline is rendered, since the render already carries volume.
+// Half-width of the ramp at the boundary ending section j, shortened so two
+// adjacent ramps cannot overlap. Mirrors clampedHalf() in stretch.js; this path
+// only runs unstretched with nothing skipped, so source time is output time.
+function rampHalf(segs, j) {
+    const wanted = ((segs[j].seam ?? SEAM_DEFAULT).ms ?? 0) / 2000;
+    if (wanted <= 0) return 0;
+    const at = segs[j].endTime;
+    const prev = j > 0 ? (segs[j - 1].endTime ?? 0) : 0;
+    const next = segs[j + 1].endTime ?? state.totalDuration;
+    return Math.max(0, Math.min(wanted, (at - prev) / 2, (next - at) / 2));
+}
+
 export function applyGainSchedule() {
     if (!state.gainNode || !state.audioCtx) return;
     // rendered audio already has volume baked in; applying it again would square it
     if (state.playMap) return;
     const now = state.audioCtx.currentTime;
     const t = getCurrentTime();
-    const segments = state.segments;
-    state.gainNode.gain.cancelScheduledValues(now);
-    if (segments.length === 0) {
-        state.gainNode.gain.setValueAtTime(1, now);
+    const segs = state.segments;
+    const gain = state.gainNode.gain;
+    gain.cancelScheduledValues(now);
+    if (segs.length === 0) {
+        gain.setValueAtTime(1, now);
         return;
     }
-    let idx = segments.findIndex(s => t < (s.endTime ?? state.totalDuration));
-    if (idx === -1) idx = segments.length - 1;
-    state.gainNode.gain.setValueAtTime(segments[idx].volume ?? 1, now);
-    for (let j = idx; j < segments.length - 1; j++) {
-        const boundary = segments[j].endTime;
+    const vol = s => s.volume ?? 1;
+    let idx = segs.findIndex(s => t < (s.endTime ?? state.totalDuration));
+    if (idx === -1) idx = segs.length - 1;
+    gain.setValueAtTime(vol(segs[idx]), now);
+
+    for (let j = idx; j < segs.length - 1; j++) {
+        const boundary = segs[j].endTime;
         if (boundary === null || boundary <= t) continue;
-        state.gainNode.gain.setValueAtTime(segments[j + 1].volume ?? 1, now + boundary - t);
+        const from = vol(segs[j]);
+        const to = vol(segs[j + 1]);
+        if (from === to) continue;
+        const at = now + boundary - t;
+        // Ramp across the boundary with the seam the user configured, matching
+        // what the render bakes in. A step here would be the very click seams
+        // exist to prevent, and would ignore the seam control (step 3 plan 2.1).
+        const half = rampHalf(segs, j);
+        const start = Math.max(now, at - half);
+        const dur = at + half - start;
+        if (dur <= 0) {
+            gain.setValueAtTime(to, at);
+            continue;
+        }
+        // Truncated when the playhead already sits inside the ramp. Safe: the
+        // curve opens at `from`, which is the value currently scheduled.
+        gain.setValueCurveAtTime(
+            fadeCurve((segs[j].seam ?? SEAM_DEFAULT).curve, curvePoints(dur), from, to),
+            start, dur,
+        );
     }
 }
 
