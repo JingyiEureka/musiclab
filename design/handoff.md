@@ -160,29 +160,54 @@ cat dev-cert.pem ca-cert.pem > dev-chain.pem
 cp ca-cert.pem musiclab-ca.crt
 ```
 
-Serve with the chain, from the repo root -- a background uvicorn started from
-`certs/` dies on `ModuleNotFoundError` and serves nothing (see section 7):
+**Terminate TLS in a proxy, never in the app.** Production is
+`browser --https--> nginx --http--> uvicorn:8000`, and the app has no TLS
+anywhere -- not in `Dockerfile`, not in `docker-compose.yml`. Keep it that way
+locally: run uvicorn exactly as section 7 says, on plain http, and put a
+TLS-terminating proxy in front of it.
+
+Uvicorn does accept `--ssl-keyfile/--ssl-certfile`, and it was used here once. It
+works, but it was the wrong call: certificate debugging then happens at a layer
+production does not have, so nothing learned transfers, and local stops
+resembling the deployment. Use nginx locally for the same reason production
+does.
 
 ```
-conda run --no-capture-output -n librosa python -m uvicorn app.main:app \
-  --host 0.0.0.0 --port 8443 \
-  --ssl-keyfile certs/dev-key.pem --ssl-certfile certs/dev-chain.pem
+# /opt/homebrew/etc/nginx/servers/musiclab-dev.conf
+server {
+    listen 8443 ssl;
+    server_name _;
+    ssl_certificate     /Users/<you>/Desktop/musiclab/certs/dev-chain.pem;
+    ssl_certificate_key /Users/<you>/Desktop/musiclab/certs/dev-key.pem;
+    client_max_body_size 200M;   # matches the production vhost
+    location / {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
 ```
+
+`brew services restart nginx`, then reach the app at `https://<lan-ip>:8443/`.
 
 On the phone: download `musiclab-ca.crt`, install it (Settings -> General ->
 VPN & Device Management), then **enable it under Settings -> General -> About ->
-Certificate Trust Settings** -- installing without that switch still fails.
-Delete the profile when finished.
+Certificate Trust Settings** -- installing without that switch still fails with
+`ERR_CERT_AUTHORITY_INVALID`. Delete the profile when finished.
 
-To hand the CA to the phone, serve *only that file* over http. Do not point a
-static server at `certs/`: it contains `ca-key.pem`, and anyone on the network can
-then take a CA the phone trusts and sign any domain with it. That mistake was made
-during this session, hence `certs/` being deleted rather than reused.
+Serve the CA over http from a directory holding **only that file**. Do not point a
+static server at `certs/`: it contains `ca-key.pem`, and anyone on the network
+could then take a CA the phone trusts and sign any domain with it. That mistake
+was made during this session, which is why `certs/` is deleted rather than reused.
 
-`certs/` is gitignored, and worth deleting after a test session rather than
-keeping a trusted CA's private key lying around. On Android none of this applies:
-`adb reverse tcp:8000 tcp:8000` makes the phone see `http://localhost:8000`, which
-counts as a secure context.
+Known unresolved: with this set up once, iOS Chrome still rejected the root
+(`ERR_CERT_AUTHORITY_INVALID`) even with full trust enabled -- it does not use the
+system trust store the way Safari does -- and Safari then failed with "network
+connection lost", which was never diagnosed. **Desktop needs none of this**:
+`http://127.0.0.1:8000` is a secure context by the localhost exemption. On Android
+`adb reverse tcp:8000 tcp:8000` sidesteps certificates entirely by making the
+phone see `http://localhost:8000`.
 
 ## 5b. Phone measurement: the mobile concern was unfounded
 
