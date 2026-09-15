@@ -18,6 +18,12 @@ def make_stereo_sine(duration_sec, sr=22050):
     return np.array([mono, mono * 0.5])
 
 
+def corr(stereo):
+    """Correlation coefficient between the two channels of a stereo array."""
+    left, right = stereo[0], stereo[1]
+    return float(np.dot(left, right) / (np.linalg.norm(left) * np.linalg.norm(right)))
+
+
 class TestStretch:
     def test_rate_one_returns_same_mono(self):
         audio = make_sine(1.0)
@@ -53,6 +59,33 @@ class TestStretch:
         result = stretch(audio, 1.5, is_stereo=True)
         assert result.ndim == 2
         assert result.shape[0] == 2
+
+    def test_pad_is_trimmed_from_result(self):
+        # 0.5s of context either side of a 1s section: the stretched context
+        # is consumed by the phase vocoder and must not reach the output
+        sr = 22050
+        audio = make_sine(2.0, sr)
+        pad = sr // 2
+        result = stretch(audio, 1.25, is_stereo=False, pad=(pad, pad))
+        core_len = len(audio) - 2 * pad
+        assert abs(len(result) - core_len / 1.25) < sr * 0.05
+
+    def test_rate_one_with_pad_returns_core(self):
+        sr = 22050
+        audio = make_sine(2.0, sr)
+        pad = sr // 2
+        result = stretch(audio, 1.0, is_stereo=False, pad=(pad, pad))
+        np.testing.assert_array_equal(result, audio[pad:-pad])
+
+    def test_stereo_keeps_channel_correlation(self):
+        # Stretching L and R through separate phase vocoder passes
+        # decorrelates them, which collapses the phantom centre and makes
+        # a stretched section sound quieter than its untouched neighbours.
+        rng = np.random.default_rng(0)
+        centre = rng.standard_normal(22050).astype(np.float32)
+        audio = np.array([centre + 0.3 * rng.standard_normal(22050), centre])
+        result = stretch(audio, 1.5, is_stereo=True)
+        assert corr(result) > corr(audio) - 0.05
 
 
 class TestCrossfade:

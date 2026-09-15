@@ -308,6 +308,31 @@ Pure deletion, nothing in it changes behaviour:
 - [ ] Check nothing else imports what is being deleted, and re-run the browser
       suite as well as pytest -- the pre-commit command is Python-only.
 
+### 6.1b Two DSP defects fixed in `speed_changer.py` -- check the browser path
+
+Found from a report that tempo-changed sections sounded louder. Both were real,
+both are fixed in the Python path, and **neither has been checked in
+`static/js/stretch.js`**. Worth measuring a browser export before Step 4 deletes
+the Python path and takes the only known-good reference with it.
+
+1. **Independent L/R stretching.** `stretch()` ran `time_stretch` separately on
+   each channel, so the phase vocoder gave each its own phase advance. L/R
+   correlation collapsed from ~0.45 to ~0.00 on every stretched section. Per
+   channel the level was untouched -- which is why the RMS compensation saw
+   nothing wrong -- but the phantom centre lost ~1.5 dB. Fixed by stretching
+   mid/side and rebuilding L/R, so both outputs come from one mid signal.
+   Signalsmith processes channels as a linked pair, so the browser is probably
+   clear, but it has not been measured.
+2. **Onset burst at every section start.** Sections were sliced with a hard cut
+   and handed straight to the stretcher, so the phase vocoder read the edge as a
+   broadband transient. The first 0.25s of every stretched section came out
+   2.5-3.5 LU too loud, decaying over ~0.5s -- far longer than the 20 ms
+   crossfade can mask. Fixed by carrying `STRETCH_CONTEXT_SEC` (1.0s) of
+   neighbouring audio into the stretcher and discarding it after. Worst onset
+   error is now 1.10 LU, worst whole-section error 0.16 LU.
+
+Any stretcher fed hard-cut slices can show defect 2; it is not librosa-specific.
+
 ### 6.2 One decision: memory on other people's phones
 
 Nothing is broken; this is about devices that are not the one measured. Memory
