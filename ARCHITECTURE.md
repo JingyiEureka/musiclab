@@ -2,105 +2,82 @@
 
 ## 1. Overview
 
-Three layers: a vanilla-JS frontend served same-origin, a FastAPI layer that
-validates requests and tracks jobs in memory, and a pure processing core
-around librosa and ffmpeg.
+All audio processing runs in the browser. The FastAPI server serves the
+frontend and does one job the browser cannot: extracting the audio track from
+video containers Safari cannot decode. A separate Python script does the same
+edit offline from the command line (ADR 0011).
 
 ```mermaid
 flowchart LR
     subgraph Browser["Browser (static/js/)"]
-        UP[Upload zone<br/>drag and drop]
-        WF[Waveform player<br/>canvas + zoom + section lane]
-        SEG[Section editor<br/>speed / volume / split / merge]
-        EXP[Export + progress banner]
-        IDB[(IndexedDB<br/>session restore)]
+        MAIN[main.js<br/>file loading, event wiring]
+        WF[waveform.js<br/>canvas + section lane]
+        SEG[segments.js<br/>speed / volume / skip / seams]
+        TL[timeline.js<br/>cached render of the edit]
+        ST[stretch.js<br/>Signalsmith Stretch, OfflineAudioContext]
+        PL[player.js<br/>transport]
+        EXP[export.js]
+        MP3[mp3.js<br/>lamejs]
+        IDB[(session.js<br/>IndexedDB restore)]
     end
 
     subgraph Server["FastAPI (app/main.py)"]
-        IDX["GET /<br/>static/index.html, no-cache"]
-        UPL["POST /upload-audio/<br/>validate, cap = 1 job"]
+        IDX["GET /<br/>index.html, no-cache"]
+        STA["/static/*"]
         EXT["POST /extract-audio/<br/>video to mp3"]
-        ST["GET /check-status/:id"]
-        DL["GET /download/:id"]
-        DB[(TASKS_DB<br/>in-memory, session-scoped)]
-        BG[background_audio_task]
-    end
-
-    subgraph Core["app/speed_changer.py"]
-        PA["process_audio<br/>load, slice, stretch,<br/>crossfade, encode"]
     end
 
     FF[ffmpeg]
-    LB[librosa / soundfile]
-    OUT[(outputs/*.mp3)]
 
-    UP -->|video file| EXT
-    UP --> WF --> SEG --> EXP
+    MAIN -->|video file| EXT --> FF
+    MAIN --> WF --> SEG
     SEG <--> IDB
-    EXP --> UPL --> DB
-    UPL --> BG --> PA
-    PA --> LB
-    PA -->|mp3 encode| FF
-    EXT --> FF
-    PA --> OUT
-    EXP -->|poll every 2s| ST --> DB
-    EXP --> DL --> OUT
+    SEG --> TL --> ST
+    PL --> TL
+    EXP --> TL
+    EXP --> MP3
 ```
 
-## 2. Export flow
+## 2. Playback and export
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant FE as static/js/
-    participant API as app/main.py
-    participant W as background task
-    participant SC as process_audio
+One render serves both (ADR 0009, 0010). `getTimeline()` renders the whole edit
+through one stretcher node driven by a time map (ADR 0005), at the export
+preset, and caches it until the next edit. The transport plays that buffer, and
+export encodes the same buffer to MP3 at 192 kbps and saves it locally. Nothing
+is uploaded.
 
-    U->>FE: click Export
-    FE->>API: POST /upload-audio/ (file, timestamps, speeds, volumes, client_ref)
-    API->>API: validate params, check cap (max 1 active)
-    API->>API: register task in TASKS_DB, save upload
-    API-->>FE: task_id
-    API->>W: queue background_audio_task
-    W->>SC: process_audio(...)
-    SC->>SC: load, slice, stretch + volume, crossfade
-    SC->>SC: write WAV, ffmpeg encode MP3
-    SC-->>W: progress callbacks update TASKS_DB
-    loop every 2s
-        FE->>API: GET /check-status/task_id
-        API-->>FE: status + progress (renders pet + bar)
-    end
-    FE->>API: GET /download/task_id
-    API-->>U: mp3 (original-name_timestamp.mp3)
-    W->>W: delete uploaded input file
-```
+Volume-only edits skip the render and play the original buffer with a live gain
+schedule, ramped at each seam with the same `fadeCurve` the render uses.
 
-## 3. Known issues and trade-offs
+The client path requires a secure context: `audioWorklet` is absent over plain
+http on a non-localhost origin. Production is behind nginx with TLS; local
+development on `127.0.0.1` is secure by the localhost exemption.
 
-Findings from a code review on 2026-07-26. All are minor at the current
-scale; listed so they are not rediscovered from scratch.
+## 3. Offline script
 
-1. **Task-slot leak on unexpected upload failure** (`app/main.py`, upload step 2).
-   If `save_upload` raises anything other than `HTTPException` (for example a
-   disk error), the `except HTTPException` block does not fire, so the
-   pending task record stays in `TASKS_DB` and occupies the single job slot
-   for up to 24 hours, blocking all exports until cleanup. Catching
-   `Exception` there would be safer.
+`app/speed_changer.py` applies cuts, speeds and volumes to a file with librosa
+and ffmpeg, configured in its `__main__` block. It is not imported by the
+server, is excluded from the Docker image, and has its own dependencies in
+`requirements-cli.txt`. It is a fallback and a reference implementation, not
+kept in step with the browser engine (ADR 0011).
 
-2. **No concurrency cap on `/extract-audio/`** (`app/main.py`). Unlike
-   `/upload-audio/`, video extraction is not limited, so several
+## 4. Known issues and trade-offs
+
+1. **No concurrency cap on `/extract-audio/`** (`app/main.py`). Several
    simultaneous ffmpeg processes could run on the 2-vCPU / 1 GB production
    box.
 
-3. **In-memory task state** (`TASKS_DB` in `app/main.py`). A container restart
-   forgets in-flight jobs; clients polling an old task get 404. Accepted
-   trade-off for a single-worker deployment.
+2. **Memory scales with output duration.** Export holds the source, the render
+   and the mp3 at once. Slowing down is what costs: a 3:11 source at 0.38x
+   peaked at 263 MB on a phone and completed, but a 5-minute file at 0.5x
+   projects to about 450 MB, which may kill the tab on older iPhones with no
+   error. See `design/handoff.md` section 6.2.
 
-4. **Mixed logging styles**. `app/speed_changer.py` uses `print` while
-   `app/main.py` uses `logging`, so container logs are inconsistent in format.
+3. **Mixed logging styles**. `app/speed_changer.py` uses `print` while
+   `app/main.py` uses `logging`. Only matters if the script is ever run inside
+   the server again.
 
-5. **Shared mutable frontend state**. The ES modules under `static/js/` pass
+4. **Shared mutable frontend state**. The ES modules under `static/js/` pass
    state through one exported `state` object (`state.js`) rather than through
    arguments. It keeps the module graph acyclic and the split small, but any
    module can write any field, so the data flow is not enforced by the

@@ -1,10 +1,9 @@
 // Client-side session persistence.
-// The whole edit lives in the browser; export re-uploads the file each time,
-// so nothing of the session is on the server. We save the uploaded file and
-// the edit metadata to IndexedDB so a refresh or crash does not lose the work.
+// The whole edit lives in the browser and export runs locally, so nothing of
+// the session is on the server. We save the uploaded file and the edit
+// metadata to IndexedDB so a refresh or crash does not lose the work.
 // The session expires a week after the last edit (sliding window, so active
-// editing never expires mid-work). This is client-only and re-decodes its own
-// stored file, so it is independent of the shorter server file sweep.
+// editing never expires mid-work).
 import { SESSION_TTL_MS } from './config.js';
 import { state } from './state.js';
 import { banner, stopPet } from './ui.js';

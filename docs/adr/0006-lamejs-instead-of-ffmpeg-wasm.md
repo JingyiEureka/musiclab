@@ -1,7 +1,7 @@
 # 0006. Encode MP3 with lamejs instead of ffmpeg.wasm
 
 Date: 2026-08-01
-Status: Accepted. Not yet implemented (Step 3).
+Status: Accepted. Implemented (Step 3).
 
 ## Context
 

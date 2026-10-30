@@ -1,7 +1,7 @@
 # 0001. Move audio processing from the server to the browser
 
 Date: 2026-08-01
-Status: Accepted. Partially implemented (see `design/step2-plan.md` section 1.3).
+Status: Accepted. Implemented. What became of `process_audio` is recorded in 0011.
 
 ## Context
 

@@ -1,9 +1,10 @@
 # Handoff: client-side DSP refactor
 
-Sessions of 2026-08-01 / 08-02 / 08-18 / 08-19. Branch `restructure-layout`,
-**not pushed and not merged to `main`**. Steps 1-3 are committed and step 4 is
-the remaining work; every technical risk the refactor opened is now closed
-(sections 5a-5c). Section 6 lists what is left.
+Sessions of 2026-08-01 / 08-02 / 08-18 / 08-19 / 10-05. Branch
+`restructure-layout`, **not pushed and not merged to `main`**. All four steps
+are done; step 4 was rescoped on 2026-10-05 to keep the Python path as an offline
+script (ADR 0011). Every technical risk the refactor opened is closed (sections
+5a-5c). Section 6 lists what is left.
 
 ## 1. Where the refactor stands
 
@@ -16,10 +17,10 @@ Original four-step plan, plus transport work that emerged from testing:
 | 2 | Full timeline: time map, per-section volume, seam fades, UI | **done** |
 | -- | Transport plays the rendered timeline (ADR 0009, 0010) | **done** |
 | 3 | MP3 encode + local download, no server round trip | **done** |
-| 4 | Delete `process_audio`, trim `requirements.txt`, update `ARCHITECTURE.md` | **not started** |
+| 4 | Delete the server processing path, keep the script offline (ADR 0011), trim deps, update `ARCHITECTURE.md` | **done** |
 
 Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
-7 mp3) via `static/dev/stretch-test.html`, plus **98 pytest**. All green. Export
+7 mp3) via `static/dev/stretch-test.html`, plus **80 pytest** (98 before step 4). All green. Export
 was also driven end to end through the real UI, and measured on the phone -- see
 `design/step3-plan.md` section 5.1 and section 5c below.
 
@@ -41,8 +42,10 @@ was also driven end to end through the real UI, and measured on the phone -- see
   that was auditioned, because both come from the same `getTimeline()` buffer.
 - The only server call left is `POST /extract-audio/`, for video containers
   Safari cannot decode. That one stays (ADR 0001).
-- `/upload-audio/`, `/check-status/` and `/download/` are now unreachable from
-  the UI but still exist. Deleting them is Step 4.
+- `/upload-audio/`, `/check-status/`, `/download/` and `TASKS_DB` are deleted.
+  `app/speed_changer.py` survives as a command-line script for working without a
+  network (ADR 0011): not imported by the server, excluded from the image, its
+  dependencies in `requirements-cli.txt`.
 
 ## 3. Decisions locked (do not re-litigate)
 
@@ -292,28 +295,34 @@ Two things this does not establish:
 Every risk the refactor opened is closed. What is left is deletion, one decision,
 and two small things.
 
-### 6.1 Step 4 -- the only remaining work
+### 6.1 Step 4 -- done (2026-10-05)
 
-Pure deletion, nothing in it changes behaviour:
+Rescoped from "delete `process_audio`" after the user asked to keep the Python
+path as an offline fallback. The server endpoints could not be that fallback --
+offline, the hosted page is unreachable too, and a locally run server already
+gives a fully offline browser path -- so they were deleted and the script kept.
+Reasoning in ADR 0011.
 
-- [ ] Delete `process_audio` and `app/speed_changer.py`.
-- [ ] Delete the endpoints `/upload-audio/`, `/check-status/{id}`, `/download/{id}`
-      and `TASKS_DB`. **Keep `/extract-audio/`** -- video containers Safari cannot
-      decode still need it (ADR 0001). It is the only server call the app makes.
-- [ ] Drop librosa, numpy and soundfile from `requirements.txt`. Keep ffmpeg for
-      the video extraction above.
-- [ ] Update `ARCHITECTURE.md`: its diagrams still show the upload/poll pipeline,
-      and known issues 1 and 3 (the one-job concurrency cap, and stuck tasks
-      holding the slot) stop existing once `TASKS_DB` goes.
-- [ ] Check nothing else imports what is being deleted, and re-run the browser
-      suite as well as pytest -- the pre-commit command is Python-only.
+- [x] Delete `/upload-audio/`, `/check-status/{id}`, `/download/{id}`, `TASKS_DB`,
+      the background task, the session cookie and the `outputs/` volume.
+      `/extract-audio/` kept (ADR 0001).
+- [x] Keep `app/speed_changer.py` as a CLI; `main.py` no longer imports it.
+- [x] librosa, numpy, soundfile moved to `requirements-cli.txt`; script and that
+      file excluded via `.dockerignore`.
+- [x] `ARCHITECTURE.md` rewritten for the client-side architecture.
+- [x] Browser suite re-run headless over CDP: 37/37 pass. pytest is now 80 (the
+      upload/poll/download API tests went with the endpoints).
+- [x] Rebuild the image and confirm it starts without librosa. Built locally
+      (2026-10-30), not deployed: no librosa/numpy/soundfile installed,
+      `speed_changer.py` absent, `/` 200, `/upload-audio/` 404,
+      `/extract-audio/` answers (400 on a non-video).
 
 ### 6.1b Two DSP defects fixed in `speed_changer.py` -- check the browser path
 
 Found from a report that tempo-changed sections sounded louder. Both were real,
 both are fixed in the Python path, and **neither has been checked in
-`static/js/stretch.js`**. Worth measuring a browser export before Step 4 deletes
-the Python path and takes the only known-good reference with it.
+`static/js/stretch.js`**. Less urgent now that the script is kept (ADR 0011): it
+stays available as the known-good reference for an A/B measurement.
 
 1. **Independent L/R stretching.** `stretch()` ran `time_stretch` separately on
    each channel, so the phase vocoder gave each its own phase advance. L/R

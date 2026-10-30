@@ -14,3 +14,5 @@ README.md
 ARCHITECTURE.md
 CLAUDE.md
 .claude
+app/speed_changer.py
+requirements-cli.txt

@@ -13,24 +13,27 @@ Architecture diagrams and known trade-offs: see [ARCHITECTURE.md](ARCHITECTURE.m
 ## Layout
 
 ```
-app/        FastAPI server (main.py) and the processing core (speed_changer.py)
+app/        FastAPI server (main.py) and the offline CLI script (speed_changer.py)
 static/     index.html, styles.css, and js/ (ES modules, entry point main.js)
 tests/      pytest suite
 ```
 
-`assets/` (sample media), `archive/` (old prototypes), `outputs/`, and
-`temp_uploads/` are runtime or local-only folders and are not tracked in git.
+`assets/` (sample media), `archive/` (old prototypes), and `temp_uploads/` are runtime or local-only folders and are not tracked in git.
 
-## CLI
+## CLI (offline)
+
+The web app does all processing in the browser. `app/speed_changer.py` does the
+same kind of edit from the command line, with no server or network, as a
+fallback. It needs ffmpeg and its own dependencies:
 
 ```
-conda activate librosa
+pip install -r requirements-cli.txt
 python3 app/speed_changer.py
 ```
 
 Edit `cut_timestamps`, `segment_speeds`, and `input_file` in the `__main__` block at the bottom of `app/speed_changer.py`.
 
-`input_file` defaults to `assets/kitri.mp3`. The `assets/` folder holds local sample media and is not tracked in git, so point `input_file` at a file of your own after cloning.
+`input_file` defaults to `assets/Esmeralda.mp3`. The `assets/` folder holds local sample media and is not tracked in git, so point `input_file` at a file of your own after cloning.
 
 ## Web App
 
@@ -74,6 +77,9 @@ docker compose pull && docker compose up -d
 ```
 
 ## Dev
+
+The test suite covers the CLI script too, so install both `requirements.txt` and
+`requirements-cli.txt` (the `librosa` conda env has them).
 
 ```
 conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest -v
