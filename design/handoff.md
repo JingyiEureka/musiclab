@@ -1,7 +1,7 @@
 # Handoff
 
-Branch `restructure-layout`, **not pushed and not merged to `main`**. Last
-updated 2026-10-31.
+Last updated 2026-11-09. The browser refactor is merged to `main` (PR #1) and
+**deployed to production** on 2026-11-09.
 
 ## 1. Where things stand
 
@@ -38,8 +38,21 @@ Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
       weight and crowding on a narrow screen have never been looked at.
 - [ ] **Pre-warm the WASM module** on file open. Low value: the whole render is
       2.4-3.2 s on the phone, which caps what it can recover.
-- [ ] **Push the branch / open a PR into `main`.** Only when asked, and the same
-      for deploying (production deploy steps are in `README.md`).
+- **Product direction:** decided 2026-11-08 to ship and gather feedback from
+  the dancers before planning new features.
+
+## 2a. Production
+
+Deployed 2026-11-09 from `main` (`51524f0`), steps in `README.md`. Verified on
+the live site: new modules served, `/upload-audio/` 404, `/extract-audio/`
+answers, and a full render and export in headless Chrome.
+
+- The pre-browser image is kept on the server as
+  `kakakakakaka/music_lab:rollback-20261108`. To roll back:
+  `docker tag kakakakakaka/music_lab:rollback-20261108 kakakakakaka/music_lab:latest`
+  then `docker compose up -d` in `/home/ubuntu/jingyi`. Remove the tag once the
+  new version has run without complaints for a while.
+- A browser tab holding the old page will fail to export until reloaded.
 
 ## 3. Vendored libraries
 
