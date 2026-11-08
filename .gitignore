@@ -1,9 +1,10 @@
 __pycache__/
 temp_uploads/
-outputs/
 _output/
 archive/
 assets/
 .pytest_cache/
 /*.mp3
 .DS_Store
+certs/
+dev-tls/

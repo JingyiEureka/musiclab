@@ -1,0 +1,1007 @@
+<!doctype html>
+<!-- Dev harness for the client-side stretch engine. Not part of the app. -->
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>stretch engine test</title>
+    <style>
+        body { font-family: ui-monospace, monospace; margin: 2rem; max-width: 60rem; }
+        table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 0.35rem 0.6rem; text-align: left; }
+        th { background: #f2f2f2; }
+        .pass { color: #0a0; font-weight: bold; }
+        .fail { color: #c00; font-weight: bold; }
+        #log { white-space: pre-wrap; background: #f8f8f8; padding: 0.75rem; }
+    </style>
+</head>
+<body>
+<h1>stretch engine test</h1>
+<p>Signalsmith Stretch via OfflineAudioContext. Run this served over HTTP
+(<code>/static/dev/stretch-test.html</code>), not from file://.</p>
+
+<button id="run">run sine tests</button>
+<button id="run-timeline">run timeline tests</button>
+<button id="play">play last render</button>
+<button id="save">download last render (wav)</button>
+
+<button id="run-model">run data model tests</button>
+
+<h2>single rate (step 1)</h2>
+<div id="results"></div>
+<h2>timeline (step 2)</h2>
+<div id="timeline-results"></div>
+<h2>data model (step 2)</h2>
+<div id="model-results"></div>
+<h2>mp3 export (step 3)</h2>
+<div id="mp3-results"></div>
+<div id="log"></div>
+
+<!-- segments.js writes into these; present so renderSegments() can run here -->
+<div style="display:none">
+    <div id="segments-container"></div>
+    <div id="section-lane-content"></div>
+    <div id="waveform-wrap"></div>
+    <span id="predicted-duration-text"></span>
+</div>
+
+<h2>cut A/B: does the seam dip matter?</h2>
+<p>Pick a real file, choose where to cut and how much to remove, then listen to
+both renders. The cut lands 4 s into each. If A and B sound the same, the
+per-boundary dip UI is not worth building.</p>
+<input type="file" id="ab-file" accept="audio/*,video/*" />
+<label>cut at <input type="number" id="ab-at" value="20" step="0.5" style="width:5rem" />s</label>
+<label>remove <input type="number" id="ab-remove" value="3" step="0.5" style="width:5rem" />s</label>
+<button id="ab-a" disabled>play A (0 ms)</button>
+<button id="ab-b" disabled>play B (60 ms)</button>
+<button id="ab-save" disabled>download both</button>
+<span id="ab-status"></span>
+
+<h2>real file</h2>
+<p>Pick an audio file to stretch at the rate below and download the result.</p>
+<input type="file" id="file" accept="audio/*,video/*" />
+<label>rate <input type="number" id="rate" value="0.84" step="0.01" min="0.05" style="width:5rem" /></label>
+<span id="filestatus"></span>
+
+<script type="module">
+import {
+    renderStretched, renderTimeline, buildTimeMap, sliceBuffer,
+    stretchedDuration, PRESET_EXPORT,
+    outputToSource, sourceToOutput, needsRender,
+} from '../js/stretch.js';
+import { audioBufferToWav, downloadBlob } from '../js/wav.js';
+import { encodeMp3 } from '../js/mp3.js';
+import { getTimeline, invalidateTimeline } from '../js/timeline.js';
+import { state } from '../js/state.js';
+import {
+    newSegment, normalizeSegments, clampSeamMs, mergeWithNext, addSegment,
+    renderSegments, refreshSeamActivity,
+} from '../js/segments.js';
+
+const logEl = document.getElementById('log');
+const log = m => { logEl.textContent += m + '\n'; };
+let lastRender = null;
+
+// ── measurement helpers ─────────────────────────────────────────
+// Zero-crossing frequency estimate. Accurate for a clean sine, which is all
+// we feed it, and needs no FFT.
+function estimateFreq(data, sr, from, to) {
+    let crossings = 0;
+    for (let i = from + 1; i < to; i++) {
+        if ((data[i - 1] < 0 && data[i] >= 0) || (data[i - 1] >= 0 && data[i] < 0)) crossings++;
+    }
+    return crossings / 2 / ((to - from) / sr);
+}
+
+function rms(data, from, to) {
+    let sum = 0;
+    for (let i = from; i < to; i++) sum += data[i] * data[i];
+    return Math.sqrt(sum / Math.max(1, to - from));
+}
+
+function onsetSeconds(data, sr, threshold = 0.02) {
+    for (let i = 0; i < data.length; i++) if (Math.abs(data[i]) > threshold) return i / sr;
+    return null;
+}
+
+function peak(data) {
+    let p = 0;
+    for (let i = 0; i < data.length; i++) p = Math.max(p, Math.abs(data[i]));
+    return p;
+}
+
+function hasNaN(data) {
+    for (let i = 0; i < data.length; i++) if (!Number.isFinite(data[i])) return true;
+    return false;
+}
+
+// ── test signal ─────────────────────────────────────────────────
+function sineBuffer({ freq = 440, seconds = 2, sr = 48000, channels = 2, amp = 0.5 }) {
+    const ctx = new OfflineAudioContext(channels, Math.ceil(seconds * sr), sr);
+    const buf = ctx.createBuffer(channels, Math.ceil(seconds * sr), sr);
+    for (let c = 0; c < channels; c++) {
+        const d = buf.getChannelData(c);
+        for (let i = 0; i < d.length; i++) d[i] = amp * Math.sin(2 * Math.PI * freq * i / sr);
+    }
+    return buf;
+}
+
+// ── the tests ───────────────────────────────────────────────────
+const CASES = [
+    { rate: 1.0, note: 'passthrough' },
+    { rate: 0.84, note: 'typical slowdown (in quality band)' },
+    { rate: 0.70, note: 'edge of quality band' },
+    { rate: 0.50, note: 'outside quality band (Esmeralda case)' },
+    { rate: 1.08, note: 'typical speedup' },
+];
+
+const FREQ = 440, SECONDS = 2, SR = 48000;
+
+async function runTests() {
+    logEl.textContent = '';
+    const rows = [];
+    const source = sineBuffer({ freq: FREQ, seconds: SECONDS, sr: SR });
+
+    for (const c of CASES) {
+        const expected = stretchedDuration(SECONDS, c.rate);
+        let row = { rate: c.rate, note: c.note, expected };
+        try {
+            const t0 = performance.now();
+            const out = await renderStretched(source, c.rate, { preset: PRESET_EXPORT });
+            row.ms = Math.round(performance.now() - t0);
+            lastRender = out;
+
+            const d = out.getChannelData(0);
+            // measure in the middle, away from fade-in/out edges
+            const from = Math.floor(0.25 * out.length);
+            const to = Math.floor(0.75 * out.length);
+            row.actual = out.duration;
+            row.freq = estimateFreq(d, out.sampleRate, from, to);
+            row.rms = rms(d, from, to);
+            row.onset = onsetSeconds(d, out.sampleRate);
+            row.peak = peak(d);
+            row.nan = hasNaN(d);
+
+            const durOk = Math.abs(row.actual - expected) / expected < 0.02;
+            const freqOk = Math.abs(row.freq - FREQ) / FREQ < 0.02;
+            const levelOk = row.rms > 0.1 && !row.nan && row.peak <= 1.001;
+            row.pass = durOk && freqOk && levelOk;
+            row.detail = [
+                durOk ? null : 'duration',
+                freqOk ? null : 'pitch',
+                levelOk ? null : 'level/nan/clip',
+            ].filter(Boolean).join(', ') || 'ok';
+        } catch (e) {
+            row.pass = false;
+            row.detail = 'threw: ' + e.message;
+            log('ERROR rate=' + c.rate + ': ' + (e.stack || e.message));
+        }
+        rows.push(row);
+    }
+
+    render(rows);
+    const onsets = rows.filter(r => r.onset != null).map(r => r.onset);
+    if (onsets.length) {
+        log('onset offsets (s): ' + onsets.map(o => o.toFixed(4)).join(', '));
+        log('If these are consistently > ~0.001s the render needs latency trimming.');
+    }
+    return rows;
+}
+
+// let a headless runner drive the same tests
+window.runStretchTests = runTests;
+
+function render(rows) {
+    const fmt = (v, n = 3) => (typeof v === 'number' ? v.toFixed(n) : '-');
+    document.getElementById('results').innerHTML = `
+        <table>
+            <tr><th>rate</th><th>case</th><th>expected s</th><th>actual s</th>
+                <th>freq Hz</th><th>rms</th><th>peak</th><th>onset s</th>
+                <th>ms</th><th>result</th></tr>
+            ${rows.map(r => `<tr>
+                <td>${r.rate}</td><td>${r.note}</td>
+                <td>${fmt(r.expected)}</td><td>${fmt(r.actual)}</td>
+                <td>${fmt(r.freq, 1)}</td><td>${fmt(r.rms)}</td><td>${fmt(r.peak)}</td>
+                <td>${fmt(r.onset, 4)}</td><td>${r.ms ?? '-'}</td>
+                <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'} ${r.detail}</td>
+            </tr>`).join('')}
+        </table>`;
+}
+
+// ── timeline tests (step 2) ─────────────────────────────────────
+// Each section carries a different tone, so a passing test proves that
+// breakpoint actually took effect. Duration alone cannot: the render length is
+// whatever we asked for.
+function multiToneBuffer(freqs, secondsEach, { sr = 48000, channels = 2, amp = 0.5 } = {}) {
+    const total = Math.ceil(freqs.length * secondsEach * sr);
+    const ctx = new OfflineAudioContext(channels, total, sr);
+    const buf = ctx.createBuffer(channels, total, sr);
+    for (let c = 0; c < channels; c++) {
+        const d = buf.getChannelData(c);
+        for (let i = 0; i < d.length; i++) {
+            const region = Math.min(freqs.length - 1, Math.floor(i / (secondsEach * sr)));
+            d[i] = amp * Math.sin(2 * Math.PI * freqs[region] * i / sr);
+        }
+    }
+    return buf;
+}
+
+// frequency over the middle 60% of [t0, t1), away from any seam fade
+function regionFreq(out, t0, t1) {
+    const sr = out.sampleRate;
+    const span = t1 - t0;
+    const from = Math.floor((t0 + span * 0.2) * sr);
+    const to = Math.floor((t1 - span * 0.2) * sr);
+    return estimateFreq(out.getChannelData(0), sr, Math.max(0, from), Math.min(out.length, to));
+}
+
+function windowRms(out, t, win) {
+    const sr = out.sampleRate;
+    const from = Math.max(0, Math.floor((t - win / 2) * sr));
+    const to = Math.min(out.length, Math.ceil((t + win / 2) * sr));
+    return rms(out.getChannelData(0), from, to);
+}
+
+function maxDelta(out, t0, t1) {
+    const sr = out.sampleRate;
+    const d = out.getChannelData(0);
+    const from = Math.max(1, Math.floor(t0 * sr));
+    const to = Math.min(out.length, Math.ceil(t1 * sr));
+    let m = 0;
+    for (let i = from; i < to; i++) m = Math.max(m, Math.abs(d[i] - d[i - 1]));
+    return m;
+}
+
+const seam = (ms, curve = 'equalPower') => ({ ms, curve });
+
+const TIMELINE_TESTS = [
+    {
+        name: '5.1 two rates',
+        async run() {
+            const src = multiToneBuffer([440, 880], 2);
+            const segs = [
+                { endTime: 2, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: null, speed: 0.84, volume: 1, skip: false, seam: seam(20) },
+            ];
+            const out = await renderTimeline(src, segs);
+            const expected = 2 + 2 / 0.84;
+            const f1 = regionFreq(out, 0, 2);
+            const f2 = regionFreq(out, 2, expected);
+            return {
+                pass: near(out.duration, expected, 0.02) && near(f1, 440, 0.03) && near(f2, 880, 0.03),
+                info: `dur ${out.duration.toFixed(3)}/${expected.toFixed(3)} f ${f1.toFixed(0)}/${f2.toFixed(0)}`,
+                out,
+            };
+        },
+    },
+    {
+        name: '5.2 three breakpoints survive',
+        async run() {
+            const src = multiToneBuffer([440, 880, 1320], 1);
+            const segs = [
+                { endTime: 1, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: 2, speed: 0.5, volume: 1, skip: false, seam: seam(20) },
+                { endTime: null, speed: 2.0, volume: 1, skip: false, seam: seam(20) },
+            ];
+            const out = await renderTimeline(src, segs);
+            // output regions: [0,1) 440, [1,3) 880, [3,3.5) 1320
+            const f1 = regionFreq(out, 0, 1);
+            const f2 = regionFreq(out, 1, 3);
+            const f3 = regionFreq(out, 3, 3.5);
+            return {
+                pass: near(out.duration, 3.5, 0.02) && near(f1, 440, 0.03)
+                    && near(f2, 880, 0.03) && near(f3, 1320, 0.05),
+                info: `dur ${out.duration.toFixed(3)}/3.500 f ${f1.toFixed(0)}/${f2.toFixed(0)}/${f3.toFixed(0)}`,
+                out,
+            };
+        },
+    },
+    {
+        name: '5.3 middle section skipped',
+        async run() {
+            const src = multiToneBuffer([440, 880, 1320], 1);
+            const segs = [
+                { endTime: 1, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: 2, speed: 1.0, volume: 1, skip: true, seam: seam(20) },
+                { endTime: null, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+            ];
+            const out = await renderTimeline(src, segs);
+            const f1 = regionFreq(out, 0, 1);
+            const f2 = regionFreq(out, 1, 2);
+            return {
+                pass: near(out.duration, 2, 0.02) && near(f1, 440, 0.03) && near(f2, 1320, 0.05),
+                info: `dur ${out.duration.toFixed(3)}/2.000 f ${f1.toFixed(0)}/${f2.toFixed(0)} (880 must be absent)`,
+                out,
+            };
+        },
+    },
+    {
+        name: '5.4 per-section volume',
+        async run() {
+            const src = multiToneBuffer([440, 440], 1);
+            const segs = [
+                { endTime: 1, speed: 1.0, volume: 1.0, skip: false, seam: seam(20) },
+                { endTime: null, speed: 1.0, volume: 0.5, skip: false, seam: seam(20) },
+            ];
+            const out = await renderTimeline(src, segs, { peakSafe: false });
+            const a = windowRms(out, 0.5, 0.4);
+            const b = windowRms(out, 1.5, 0.4);
+            return {
+                pass: near(a / b, 2, 0.06),
+                info: `rms ratio ${(a / b).toFixed(3)} (want 2.0)`,
+                out,
+            };
+        },
+    },
+    {
+        name: '5.5 volume ramp is monotonic',
+        async run() {
+            const src = multiToneBuffer([440, 440], 1);
+            const segs = [
+                { endTime: 1, speed: 1.0, volume: 1.0, skip: false, seam: seam(200) },
+                { endTime: null, speed: 1.0, volume: 0.25, skip: false, seam: seam(200) },
+            ];
+            const out = await renderTimeline(src, segs, { peakSafe: false });
+            const levels = [];
+            for (let t = 0.9; t <= 1.1001; t += 0.02) levels.push(windowRms(out, t, 0.012));
+            let ok = true;
+            for (let i = 1; i < levels.length; i++) if (levels[i] > levels[i - 1] * 1.06) ok = false;
+            return {
+                pass: ok && levels[0] > levels[levels.length - 1] * 2,
+                info: levels.map(l => l.toFixed(2)).join(' '),
+                out,
+            };
+        },
+    },
+    {
+        // The stretcher is one continuous overlap-add stream, so an input jump
+        // is already smoothed by its own windowing. Nothing here should show a
+        // hard step, with or without a dip. Normal slope for a 1320 Hz sine at
+        // amplitude 0.5 is 2*pi*1320/48000*0.5 = 0.086, so 0.15 is the ceiling.
+        name: '5.6 cut has no hard discontinuity',
+        async run() {
+            const src = multiToneBuffer([440, 880, 1320], 1);
+            const mk = ms => [
+                { endTime: 1, speed: 1.0, volume: 1, skip: false, seam: seam(ms) },
+                { endTime: 2, speed: 1.0, volume: 1, skip: true, seam: seam(ms) },
+                { endTime: null, speed: 1.0, volume: 1, skip: false, seam: seam(ms) },
+            ];
+            const bare = await renderTimeline(src, mk(0), { peakSafe: false });
+            const faded = await renderTimeline(src, mk(20), { peakSafe: false });
+            const dBare = maxDelta(bare, 0.98, 1.02);
+            const dFaded = maxDelta(faded, 0.98, 1.02);
+            return {
+                pass: dBare < 0.15 && dFaded < 0.15,
+                info: `max sample step: 0ms ${dBare.toFixed(3)}, 20ms ${dFaded.toFixed(3)} (both want <0.15, slope is 0.086)`,
+                out: faded,
+            };
+        },
+    },
+    {
+        // equalPower is deliberately a shallow dip, so measure in a narrow
+        // window at the centre. The ms:0 case is the control - no dip, no
+        // attenuation - which is what proves the curve is doing the work.
+        name: '5.7 dip attenuates at the cut',
+        async run() {
+            const src = multiToneBuffer([440, 880, 1320], 1);
+            const mk = ms => [
+                { endTime: 1, speed: 1.0, volume: 1, skip: false, seam: seam(ms) },
+                { endTime: 2, speed: 1.0, volume: 1, skip: true, seam: seam(ms) },
+                { endTime: null, speed: 1.0, volume: 1, skip: false, seam: seam(ms) },
+            ];
+            const bare = await renderTimeline(src, mk(0), { peakSafe: false });
+            const out = await renderTimeline(src, mk(60), { peakSafe: false });
+            const away = windowRms(out, 0.7, 0.1);
+            const atCut = windowRms(out, 1.0, 0.0006) / away;
+            const atCutBare = windowRms(bare, 1.0, 0.0006) / windowRms(bare, 0.7, 0.1);
+            return {
+                pass: atCut < 0.12 && atCutBare > 0.5,
+                info: `rms at cut / away: 60ms ${atCut.toFixed(3)} (want <0.12), 0ms ${atCutBare.toFixed(3)} (want >0.5)`,
+                out,
+            };
+        },
+    },
+    {
+        name: '5.8 peak safety',
+        async run() {
+            const src = multiToneBuffer([440, 880], 1, { amp: 0.99 });
+            const segs = [
+                { endTime: 1, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: null, speed: 0.84, volume: 1, skip: false, seam: seam(20) },
+            ];
+            const raw = await renderTimeline(src, segs, { peakSafe: false });
+            const safe = await renderTimeline(src, segs, { peakSafe: true });
+            const pRaw = peak(raw.getChannelData(0));
+            const pSafe = Math.max(peak(safe.getChannelData(0)), peak(safe.getChannelData(1)));
+            return {
+                pass: pRaw > 1.0 && pSafe <= 1.0001,
+                info: `peak raw ${pRaw.toFixed(4)} (want >1), safe ${pSafe.toFixed(4)} (want <=1)`,
+                out: safe,
+            };
+        },
+    },
+    {
+        // Parity between playback and export is now structural: one code path,
+        // one preset. What that rests on is the render being deterministic, so
+        // the same timeline twice gives the same samples.
+        name: '5.10 render is deterministic (playback == export)',
+        async run() {
+            const src = multiToneBuffer([440, 880], 5); // 10 s
+            const segs = [
+                { endTime: 5, speed: 0.84, volume: 1.0, skip: false, seam: seam(20) },
+                { endTime: null, speed: 1.0, volume: 0.5, skip: false, seam: seam(200) },
+            ];
+            const a = await renderTimeline(src, segs, { preset: PRESET_EXPORT });
+            const b = await renderTimeline(src, segs, { preset: PRESET_EXPORT });
+            let maxDiff = 0;
+            for (let c = 0; c < a.numberOfChannels; c++) {
+                const da = a.getChannelData(c), db = b.getChannelData(c);
+                for (let i = 0; i < da.length; i++) {
+                    maxDiff = Math.max(maxDiff, Math.abs(da[i] - db[i]));
+                }
+            }
+            return {
+                pass: a.length === b.length && maxDiff < 1e-6,
+                info: `len ${a.length}/${b.length}, max sample diff ${maxDiff.toExponential(1)} (want ~0)`,
+                out: a,
+            };
+        },
+    },
+    {
+        // Every edit is followed by a render before Play can start.
+        name: '5.11 render latency (16 s window)',
+        async run() {
+            const src = multiToneBuffer([440, 880], 8); // 16 s
+            const segs = [
+                { endTime: 8, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: null, speed: 0.84, volume: 1, skip: false, seam: seam(20) },
+            ];
+            const t0 = performance.now();
+            const out = await renderTimeline(src, segs, { preset: PRESET_EXPORT });
+            const ms = Math.round(performance.now() - t0);
+            return {
+                pass: ms < 6000,
+                info: `${ms} ms for 16 s (desktop)`,
+                out,
+            };
+        },
+    },
+    {
+        // 5.9: what the transport pays on first play after an edit. Rendered at
+        // the export preset, since playback and export are now the same render.
+        name: '5.9 full 3-minute timeline at export quality',
+        async run() {
+            const src = multiToneBuffer([440, 880, 1320], 60); // 180 s
+            const segs = [
+                { endTime: 60, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: 120, speed: 0.84, volume: 1, skip: false, seam: seam(20) },
+                { endTime: null, speed: 0.95, volume: 1, skip: false, seam: seam(20) },
+            ];
+            const t1 = performance.now();
+            const full = await renderTimeline(src, segs, { preset: PRESET_EXPORT });
+            const fullMs = Math.round(performance.now() - t1);
+
+            const t2 = performance.now();
+            await renderTimeline(sliceBuffer(src, 50, 66), [
+                { endTime: 10, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
+                { endTime: null, speed: 0.84, volume: 1, skip: false, seam: seam(20) },
+            ], { preset: PRESET_EXPORT });
+            const winMs = Math.round(performance.now() - t2);
+
+            const realtime = (src.duration / (fullMs / 1000)).toFixed(0);
+            log(`5.9 full render ${fullMs} ms for ${src.duration.toFixed(0)}s (${realtime}x realtime); `
+                + `16 s window ${winMs} ms; ratio ${(fullMs / winMs).toFixed(1)}x`);
+            return {
+                pass: fullMs > 0 && winMs > 0,
+                info: `full ${fullMs} ms (${realtime}x realtime), window ${winMs} ms, ratio ${(fullMs / winMs).toFixed(1)}x`,
+                out: full,
+            };
+        },
+    },
+];
+
+function near(a, b, tol) {
+    return Math.abs(a - b) / Math.abs(b || 1) < tol;
+}
+
+async function runTimelineTests() {
+    const rows = [];
+    for (const t of TIMELINE_TESTS) {
+        try {
+            const t0 = performance.now();
+            const r = await t.run();
+            if (r.out) lastRender = r.out;
+            rows.push({ name: t.name, pass: r.pass, info: r.info, ms: Math.round(performance.now() - t0) });
+        } catch (e) {
+            rows.push({ name: t.name, pass: false, info: 'threw: ' + e.message, ms: 0 });
+            log('ERROR ' + t.name + ': ' + (e.stack || e.message));
+        }
+    }
+    document.getElementById('timeline-results').innerHTML = `
+        <table>
+            <tr><th>test</th><th>measured</th><th>ms</th><th>result</th></tr>
+            ${rows.map(r => `<tr>
+                <td>${r.name}</td><td>${r.info}</td><td>${r.ms}</td>
+                <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'}</td>
+            </tr>`).join('')}
+        </table>`;
+    return rows;
+}
+
+// ── data model tests (4B) ───────────────────────────────────────
+const MODEL_TESTS = [
+    {
+        name: 'M1 newSegment carries a default seam',
+        run() {
+            const s = newSegment();
+            return { pass: s.seam.ms === 20 && s.seam.curve === 'equalPower', info: JSON.stringify(s.seam) };
+        },
+    },
+    {
+        name: 'M2 normalizeSegments backfills legacy sections',
+        run() {
+            // a session saved before seams existed, plus a bad curve name
+            const out = normalizeSegments([
+                { endTime: 5, speed: 0.84, volume: 1, skip: false },
+                { endTime: null, speed: 1, volume: 1, skip: false, seam: { ms: 5000, curve: 'nope' } },
+            ]);
+            return {
+                pass: out[0].seam.ms === 20 && out[0].seam.curve === 'equalPower'
+                    && out[1].seam.ms === 1000 && out[1].seam.curve === 'equalPower'
+                    && out[0].speed === 0.84,
+                info: JSON.stringify([out[0].seam, out[1].seam]),
+            };
+        },
+    },
+    {
+        name: 'M3 mergeWithNext inherits the surviving boundary seam',
+        run() {
+            state.totalDuration = 30;
+            state.segments = [
+                newSegment({ endTime: 10, seam: { ms: 100, curve: 'linear' } }),
+                newSegment({ endTime: 20, seam: { ms: 300, curve: 'smooth' } }),
+                newSegment({ endTime: null }),
+            ];
+            mergeWithNext(0);
+            const s = state.segments[0];
+            // endTime and seam must move together: both describe boundary 20
+            return {
+                pass: s.endTime === 20 && s.seam.ms === 300 && s.seam.curve === 'smooth'
+                    && state.segments.length === 2,
+                info: `endTime ${s.endTime} seam ${s.seam.ms}ms ${s.seam.curve} (want 20 / 300ms smooth)`,
+            };
+        },
+    },
+    {
+        name: 'M4 addSegment gives the new boundary a default seam',
+        run() {
+            state.totalDuration = 30;
+            state.isPlaying = false;
+            state.playOffset = 10;
+            state.segments = [newSegment({ endTime: null, seam: { ms: 400, curve: 'linear' } })];
+            addSegment();
+            const [first, second] = state.segments;
+            // the inserted first half owns the new split; the original keeps its own
+            return {
+                pass: state.segments.length === 2 && first.endTime === 10
+                    && first.seam.ms === 20 && second.seam.ms === 400,
+                info: `inserted ${first.seam.ms}ms, original ${second.seam.ms}ms (want 20 / 400)`,
+            };
+        },
+    },
+    {
+        name: 'M5 cut uses the last non-skipped section seam',
+        run() {
+            const segs = [
+                newSegment({ endTime: 1, seam: { ms: 77, curve: 'linear' } }),
+                newSegment({ endTime: 2, skip: true, seam: { ms: 999, curve: 'smooth' } }),
+                newSegment({ endTime: null }),
+            ];
+            const map = buildTimeMap(segs, 3);
+            const cut = map.cuts[0];
+            return {
+                pass: map.cuts.length === 1 && cut.seam.ms === 77 && cut.seam.curve === 'linear',
+                info: `${map.cuts.length} cut, seam ${cut?.seam.ms}ms ${cut?.seam.curve} (want 77ms linear)`,
+            };
+        },
+    },
+    {
+        name: 'M6 leading and trailing skips are trims, not cuts',
+        run() {
+            const segs = [
+                newSegment({ endTime: 1, skip: true }),
+                newSegment({ endTime: 2 }),
+                newSegment({ endTime: null, skip: true }),
+            ];
+            const map = buildTimeMap(segs, 3);
+            return {
+                pass: map.cuts.length === 0 && Math.abs(map.outputDuration - 1) < 1e-6,
+                info: `${map.cuts.length} cuts (want 0), duration ${map.outputDuration.toFixed(3)} (want 1.000)`,
+            };
+        },
+    },
+    {
+        name: 'M7 clampSeamMs bounds',
+        run() {
+            const vals = [clampSeamMs(-5), clampSeamMs(99999), clampSeamMs('abc'), clampSeamMs(60)];
+            return { pass: vals[0] === 0 && vals[1] === 1000 && vals[2] === 20 && vals[3] === 60, info: vals.join(', ') };
+        },
+    },
+    {
+        name: 'M8 seam ms reaches the volume ramp span',
+        run() {
+            const segs = [
+                newSegment({ endTime: 10, volume: 1.0, seam: { ms: 500, curve: 'linear' } }),
+                newSegment({ endTime: null, volume: 0.5 }),
+            ];
+            const map = buildTimeMap(segs, 20);
+            const r = map.volumeRamps[0];
+            return {
+                pass: map.volumeRamps.length === 1 && r.seam.ms === 500
+                    && r.from === 1.0 && r.to === 0.5 && Math.abs(r.output - 10) < 1e-6,
+                info: `${map.volumeRamps.length} ramp, ${r?.seam.ms}ms at ${r?.output.toFixed(1)}s, ${r?.from}->${r?.to}`,
+            };
+        },
+    },
+    {
+        name: 'M9 seam control only on boundaries between kept sections',
+        run() {
+            state.totalDuration = 40;
+            state.segments = [
+                newSegment({ endTime: 10, volume: 1.0 }),
+                newSegment({ endTime: 20, volume: 0.5 }),
+                newSegment({ endTime: 30, skip: true }),
+                newSegment({ endTime: null, volume: 1.0 }),
+            ];
+            renderSegments();
+            const ctls = document.querySelectorAll('#segments-container .seam-ctl');
+            // boundaries: 0|1 kept+kept -> yes; 1|2 next skipped -> no; 2|3 skipped -> no
+            const idx = [...ctls].map(el => el.dataset.index).join(',');
+            return { pass: ctls.length === 1 && idx === '0', info: `${ctls.length} control(s) at index [${idx}] (want 1 at 0)` };
+        },
+    },
+    {
+        name: 'M10 seam control dims when volumes match',
+        run() {
+            state.totalDuration = 40;
+            state.segments = [
+                newSegment({ endTime: 10, volume: 1.0 }),
+                newSegment({ endTime: 20, volume: 1.0 }),
+                newSegment({ endTime: null, volume: 0.25 }),
+            ];
+            renderSegments();
+            const a = document.querySelector('.seam-ctl[data-index="0"]');
+            const b = document.querySelector('.seam-ctl[data-index="1"]');
+            const before = a.classList.contains('inactive') && !b.classList.contains('inactive');
+            // a live volume edit should re-dim without a table rebuild
+            state.segments[1].volume = 0.5;
+            refreshSeamActivity();
+            const after = !a.classList.contains('inactive');
+            return {
+                pass: before && after,
+                info: `equal volumes dimmed: ${before}, undimmed after edit: ${after}`,
+            };
+        },
+    },
+    {
+        name: 'M12 output/source mapping round trips',
+        run() {
+            const segs = [
+                newSegment({ endTime: 10, speed: 1.0 }),
+                newSegment({ endTime: 20, speed: 0.5 }),
+                newSegment({ endTime: null, speed: 2.0 }),
+            ];
+            const map = buildTimeMap(segs, 30);
+            // source 5 -> out 5, source 15 -> out 20, source 25 -> out 32.5
+            const pairs = [[5, 5], [15, 20], [25, 32.5]];
+            const fwd = pairs.every(([src, out]) => Math.abs(sourceToOutput(map, src) - out) < 1e-6);
+            const back = pairs.every(([src, out]) => Math.abs(outputToSource(map, out) - src) < 1e-6);
+            return {
+                pass: fwd && back && Math.abs(map.outputDuration - 35) < 1e-6,
+                info: `forward ${fwd}, inverse ${back}, duration ${map.outputDuration.toFixed(1)} (want 35)`,
+            };
+        },
+    },
+    {
+        name: 'M13 seeking into removed material lands at the cut',
+        run() {
+            const segs = [
+                newSegment({ endTime: 10 }),
+                newSegment({ endTime: 20, skip: true }),
+                newSegment({ endTime: null }),
+            ];
+            const map = buildTimeMap(segs, 30);
+            // source 15 is inside the skip: playback resumes at output 10
+            const out = sourceToOutput(map, 15);
+            // and output 10 is source 20, where the kept material continues
+            const src = outputToSource(map, 10);
+            return {
+                pass: Math.abs(out - 10) < 1e-6 && Math.abs(src - 20) < 1e-6
+                    && Math.abs(map.outputDuration - 20) < 1e-6,
+                info: `src 15 -> out ${out.toFixed(1)} (want 10), out 10 -> src ${src.toFixed(1)} (want 20)`,
+            };
+        },
+    },
+    {
+        name: 'M14 needsRender only for speed or skip',
+        run() {
+            const volumeOnly = needsRender([newSegment({ volume: 0.5 }), newSegment({ volume: 2 })]);
+            const speed = needsRender([newSegment({ speed: 0.84 })]);
+            const skip = needsRender([newSegment({ skip: true })]);
+            const clean = needsRender([newSegment()]);
+            return {
+                pass: volumeOnly === false && speed === true && skip === true && clean === false,
+                info: `volume-only ${volumeOnly}, speed ${speed}, skip ${skip}, untouched ${clean}`,
+            };
+        },
+    },
+    {
+        name: 'M11 lane ramp appears only where volumes differ',
+        run() {
+            state.totalDuration = 40;
+            state.waveformZoom = 1;
+            state.segments = [
+                newSegment({ endTime: 10, volume: 1.0, seam: { ms: 400, curve: 'linear' } }),
+                newSegment({ endTime: 20, volume: 0.5, seam: { ms: 400, curve: 'linear' } }),
+                newSegment({ endTime: null, volume: 0.5 }),
+            ];
+            renderSegments();
+            const ramps = document.querySelectorAll('#section-lane-content .lane-seam');
+            const falling = document.querySelectorAll('#section-lane-content .lane-seam.falling');
+            return {
+                pass: ramps.length === 1 && falling.length === 1,
+                info: `${ramps.length} ramp (want 1), falling ${falling.length} (want 1)`,
+            };
+        },
+    },
+];
+
+async function runModelTests() {
+    const rows = MODEL_TESTS.map(t => {
+        try {
+            const r = t.run();
+            return { name: t.name, pass: r.pass, info: r.info };
+        } catch (e) {
+            log('ERROR ' + t.name + ': ' + (e.stack || e.message));
+            return { name: t.name, pass: false, info: 'threw: ' + e.message };
+        }
+    });
+    document.getElementById('model-results').innerHTML = `
+        <table>
+            <tr><th>test</th><th>measured</th><th>result</th></tr>
+            ${rows.map(r => `<tr><td>${r.name}</td><td>${r.info}</td>
+                <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'}</td></tr>`).join('')}
+        </table>`;
+    return rows;
+}
+
+// ── cut A/B ─────────────────────────────────────────────────────
+let abA = null, abB = null;
+
+async function buildAB(file) {
+    const status = document.getElementById('ab-status');
+    const at = parseFloat(document.getElementById('ab-at').value);
+    const remove = parseFloat(document.getElementById('ab-remove').value);
+    status.textContent = ' decoding...';
+    const ctx = new AudioContext();
+    const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+    if (at + remove > buf.duration) {
+        status.textContent = ` file is only ${buf.duration.toFixed(1)}s - cut + remove is past the end`;
+        return;
+    }
+    const w0 = Math.max(0, at - 4);
+    const w1 = Math.min(buf.duration, at + remove + 4);
+    const slice = sliceBuffer(buf, w0, w1);
+    const segs = ms => [
+        { endTime: at - w0, speed: 1, volume: 1, skip: false, seam: { ms, curve: 'equalPower' } },
+        { endTime: at + remove - w0, speed: 1, volume: 1, skip: true, seam: { ms, curve: 'equalPower' } },
+        { endTime: null, speed: 1, volume: 1, skip: false, seam: { ms, curve: 'equalPower' } },
+    ];
+    status.textContent = ' rendering...';
+    abA = await renderTimeline(slice, segs(0), { preset: PRESET_EXPORT });
+    abB = await renderTimeline(slice, segs(60), { preset: PRESET_EXPORT });
+    ['ab-a', 'ab-b', 'ab-save'].forEach(id => { document.getElementById(id).disabled = false; });
+    status.textContent = ` ready - cut is at ${(at - w0).toFixed(1)}s into each render`;
+    log(`A/B: cut at ${at}s, removed ${remove}s, window ${w0.toFixed(1)}-${w1.toFixed(1)}s`);
+}
+
+async function playBuffer(buffer) {
+    if (!buffer) return;
+    const ctx = new AudioContext();
+    await ctx.resume();
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start();
+}
+
+document.getElementById('ab-file').addEventListener('change', e => {
+    if (e.target.files[0]) buildAB(e.target.files[0]).catch(err => {
+        document.getElementById('ab-status').textContent = ' failed: ' + err.message;
+        log('A/B error: ' + (err.stack || err.message));
+    });
+});
+document.getElementById('ab-a').addEventListener('click', () => playBuffer(abA));
+document.getElementById('ab-b').addEventListener('click', () => playBuffer(abB));
+document.getElementById('ab-save').addEventListener('click', () => {
+    if (abA) downloadBlob(audioBufferToWav(abA), 'cut_seam_0ms.wav');
+    if (abB) setTimeout(() => downloadBlob(audioBufferToWav(abB), 'cut_seam_60ms.wav'), 600);
+});
+
+document.getElementById('run').addEventListener('click', runTests);
+document.getElementById('run-timeline').addEventListener('click', runTimelineTests);
+document.getElementById('run-model').addEventListener('click', runModelTests);
+// ── mp3 export tests (step 3) ───────────────────────────────────
+// Decode what the encoder produced and measure it, rather than trusting a byte
+// count. MP3 is lossy and adds priming samples, so tolerances are looser than
+// the render tests - but a wrong tone or a missing section still fails.
+async function decodeBlob(blob) {
+    const ctx = new OfflineAudioContext(1, 1, 48000);
+    return ctx.decodeAudioData(await blob.arrayBuffer());
+}
+
+const MP3_TESTS = [
+    {
+        name: 'E1 a 440 Hz tone survives encoding',
+        async run() {
+            const src = sineBuffer({ freq: 440, seconds: 3, channels: 2 });
+            const blob = await encodeMp3(src);
+            const out = await decodeBlob(blob);
+            const f = regionFreq(out, 1, 2);
+            const r = windowRms(out, 1.5, 0.2);
+            return {
+                pass: Math.abs(f - 440) / 440 < 0.02 && r > 0.1 && !hasNaN(out.getChannelData(0)),
+                info: `${f.toFixed(1)} Hz (want 440), rms ${r.toFixed(3)}, ${blob.size} bytes`,
+            };
+        },
+    },
+    {
+        name: 'E2 duration within 50 ms of the source',
+        async run() {
+            const src = sineBuffer({ freq: 440, seconds: 3, channels: 2 });
+            const out = await decodeBlob(await encodeMp3(src));
+            // encoder priming plus frame padding, so exact equality is wrong to expect
+            const d = out.duration - src.duration;
+            return { pass: Math.abs(d) < 0.05, info: `${d >= 0 ? '+' : ''}${(d * 1000).toFixed(0)} ms` };
+        },
+    },
+    {
+        name: 'E3 three sections keep three distinct tones',
+        async run() {
+            // duration alone cannot prove this: a wrong render is still the
+            // length we asked for. Different tones can.
+            const src = multiToneBuffer([330, 550, 880], 1.5);
+            const out = await decodeBlob(await encodeMp3(src));
+            const got = [regionFreq(out, 0.4, 1.1), regionFreq(out, 1.9, 2.6), regionFreq(out, 3.4, 4.1)];
+            const want = [330, 550, 880];
+            const ok = got.every((f, i) => Math.abs(f - want[i]) / want[i] < 0.03);
+            return { pass: ok, info: got.map(f => f.toFixed(0)).join(' / ') + ' (want 330 / 550 / 880)' };
+        },
+    },
+    {
+        name: 'E4 mono source encodes as 1 channel and stays audible',
+        async run() {
+            const src = sineBuffer({ freq: 440, seconds: 2, channels: 1 });
+            const out = await decodeBlob(await encodeMp3(src));
+            const r = windowRms(out, 1, 0.2);
+            return {
+                pass: out.numberOfChannels === 1 && r > 0.1,
+                info: `${out.numberOfChannels} ch (want 1), rms ${r.toFixed(3)}`,
+            };
+        },
+    },
+    {
+        name: 'E5 progress is monotonic and reaches 1',
+        async run() {
+            const seen = [];
+            await encodeMp3(sineBuffer({ freq: 440, seconds: 12, channels: 2 }), {
+                onProgress: p => seen.push(p),
+            });
+            const monotonic = seen.every((p, i) => i === 0 || p >= seen[i - 1]);
+            return {
+                pass: seen.length > 1 && monotonic && seen[seen.length - 1] === 1,
+                info: `${seen.length} calls, last ${seen[seen.length - 1]}, monotonic ${monotonic}`,
+            };
+        },
+    },
+    {
+        name: 'E6 a hot source does not come back clipped',
+        async run() {
+            // peak safety runs inside renderTimeline; this checks the encoder
+            // does not undo it and that a near-0 dBFS source stays clean
+            const src = sineBuffer({ freq: 440, seconds: 2, channels: 2, amp: 0.99 });
+            const rendered = await renderTimeline(src, [newSegment({ endTime: null, speed: 1.25 })]);
+            const out = await decodeBlob(await encodeMp3(rendered));
+            const p = peak(out.getChannelData(0));
+            return { pass: p <= 1.02, info: `peak ${p.toFixed(4)} (render peak ${peak(rendered.getChannelData(0)).toFixed(4)})` };
+        },
+    },
+    {
+        name: 'E7 export encodes the buffer the transport played',
+        async run() {
+            // The parity claim ADR 0010 rests on: getTimeline() hands out one
+            // cached buffer, so playback and export cannot diverge.
+            state.totalDuration = 6;
+            state.audioBuffer = multiToneBuffer([440, 660], 3);
+            state.segments = [
+                newSegment({ endTime: 3, speed: 1.25 }),
+                newSegment({ endTime: null, speed: 1 }),
+            ];
+            invalidateTimeline();
+            const first = await getTimeline();
+            const second = await getTimeline();
+            return {
+                pass: first.buffer === second.buffer,
+                info: first.buffer === second.buffer ? 'same buffer object' : 're-rendered',
+            };
+        },
+    },
+];
+
+async function runMp3Tests() {
+    const rows = [];
+    for (const t of MP3_TESTS) {
+        try {
+            const t0 = performance.now();
+            const r = await t.run();
+            rows.push({ name: t.name, pass: r.pass, info: r.info, ms: Math.round(performance.now() - t0) });
+        } catch (e) {
+            rows.push({ name: t.name, pass: false, info: 'threw: ' + e.message, ms: 0 });
+            log('ERROR ' + t.name + ': ' + (e.stack || e.message));
+        }
+    }
+    document.getElementById('mp3-results').innerHTML = `
+        <table>
+            <tr><th>test</th><th>measured</th><th>ms</th><th>result</th></tr>
+            ${rows.map(r => `<tr>
+                <td>${r.name}</td><td>${r.info}</td><td>${r.ms}</td>
+                <td class="${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'}</td>
+            </tr>`).join('')}
+        </table>`;
+    return rows;
+}
+
+window.runTimelineTests = runTimelineTests;
+window.runModelTests = runModelTests;
+window.runMp3Tests = runMp3Tests;
+
+document.getElementById('play').addEventListener('click', async () => {
+    if (!lastRender) return log('nothing rendered yet');
+    const ctx = new AudioContext();
+    await ctx.resume();
+    const src = ctx.createBufferSource();
+    src.buffer = lastRender;
+    src.connect(ctx.destination);
+    src.start();
+});
+
+document.getElementById('save').addEventListener('click', () => {
+    if (!lastRender) return log('nothing rendered yet');
+    downloadBlob(audioBufferToWav(lastRender), 'stretch-test.wav');
+});
+
+document.getElementById('file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const status = document.getElementById('filestatus');
+    const rate = parseFloat(document.getElementById('rate').value) || 1;
+    status.textContent = ' decoding...';
+    try {
+        const ctx = new AudioContext();
+        const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+        status.textContent = ` ${buf.duration.toFixed(1)}s / ${buf.numberOfChannels}ch / ${buf.sampleRate}Hz - rendering...`;
+        const t0 = performance.now();
+        const out = await renderStretched(buf, rate, { preset: PRESET_EXPORT });
+        const ms = Math.round(performance.now() - t0);
+        lastRender = out;
+        status.textContent = ` rendered ${out.duration.toFixed(1)}s in ${ms}ms (${(buf.duration / (ms / 1000)).toFixed(1)}x realtime)`;
+        log(`file: ${file.name} rate=${rate} in=${buf.duration.toFixed(2)}s out=${out.duration.toFixed(2)}s ${ms}ms`);
+        downloadBlob(audioBufferToWav(out), file.name.replace(/\.[^.]+$/, '') + `_${Math.round(rate * 100)}.wav`);
+    } catch (err) {
+        status.textContent = ' failed: ' + err.message;
+        log('file error: ' + (err.stack || err.message));
+    }
+});
+</script>
+</body>
+</html>

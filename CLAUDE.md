@@ -4,10 +4,19 @@
 
 Run the linter and tests. Commit only if both pass.
 
-Remove any remaining plan files (`design/`) and draft wireframes (`wireframe.html`) before committing -- these are development artifacts, not production code.
+Remove draft wireframes (`wireframe.html`) before committing -- those are throwaway.
+
+**Keep** `design/` and `docs/adr/`. Plans record what is still outstanding and why
+a step was scoped the way it was; ADRs record decisions that are costly to reverse.
+Both are committed alongside the code.
+
+- `design/` -- working plans and handoff notes. `design/handoff.md` is the entry
+  point for picking up in-flight work.
+- `docs/adr/` -- architecture decision records. Immutable once accepted; to change
+  a decision, add a new record that supersedes the old one and update its status.
 
 ```
-conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest test_speed_changer.py test_api.py -v
+conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest -v
 ```
 
 To auto-fix lint issues:
