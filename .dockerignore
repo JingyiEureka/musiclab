@@ -3,7 +3,6 @@ __pycache__
 .pytest_cache
 .ruff_cache
 temp_uploads
-outputs
 _output
 archive
 assets

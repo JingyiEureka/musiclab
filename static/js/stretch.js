@@ -16,9 +16,7 @@
 import { SEAM_DEFAULT } from './config.js';
 
 // PRESET_EXPORT is what both playback and export use, so the two cannot
-// diverge (ADR 0010). PRESET_PREVIEW is kept for the dev harness and as the
-// escape hatch if mobile render times force a cheaper playback path.
-export const PRESET_PREVIEW = 'cheaper';
+// diverge (ADR 0010).
 export const PRESET_EXPORT = 'default';
 
 // Loaded on first render rather than at import time: the vendored module is

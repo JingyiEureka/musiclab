@@ -1,7 +1,7 @@
 # 0005. Render the timeline as one time map through a single stretcher node
 
 Date: 2026-08-01
-Status: Accepted. Implementation planned in `design/step2-plan.md` section 4A.
+Status: Accepted. Implemented in `static/js/stretch.js`.
 
 ## Context
 

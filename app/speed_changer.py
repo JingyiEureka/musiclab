@@ -10,10 +10,6 @@ import soundfile as sf
 warnings.filterwarnings("ignore")
 
 
-class AudioDecodeError(Exception):
-    pass
-
-
 # Lead-in/lead-out handed to the stretcher so the section edge is not also
 # the phase vocoder's edge. 1.0s is the shortest value that held every
 # section in Esmeralda.mp3 within ~0.6 LU of its source at the boundary.
@@ -84,20 +80,12 @@ def process_audio(
     speeds,
     overall_factor=1.0,
     volumes=None,
-    progress_cb=None,
 ):
     """
     Process audio: slice at timestamps, apply per-segment speed and volume
-    changes, crossfade, and export to output_path.
-
-    progress_cb, if given, is called as progress_cb(fraction, stage) where
-    fraction goes 0..1 and stage is a short label like "section 2/5".
+    changes, crossfade, and export to output_path. A speed of 0 removes
+    the section.
     """
-    if progress_cb is None:
-
-        def progress_cb(frac, stage):
-            pass
-
     if len(speeds) != len(timestamps) + 1:
         raise ValueError(
             f"Array length mismatch: {len(timestamps)} timestamps "
@@ -115,14 +103,8 @@ def process_audio(
     final_speeds = [s * overall_factor for s in speeds]
 
     print(f"Loading audio: {input_path} (this may take a moment)...")
-    try:
-        y, sr = librosa.load(input_path, sr=None, mono=False)
-    except FileNotFoundError:
-        raise
-    except Exception as e:
-        raise AudioDecodeError(str(e)) from e
+    y, sr = librosa.load(input_path, sr=None, mono=False)
     is_stereo = y.ndim > 1
-    progress_cb(0.10, "loading")
 
     sample_indices = [int(t * sr) for t in timestamps]
 
@@ -141,14 +123,6 @@ def process_audio(
         slices.append((segment, start_idx - lo, hi - end_idx, end_idx - start_idx))
         start_idx = end_idx
 
-    # progress weight per segment ~ output length (what stretch cost scales with)
-    weights = [
-        0 if speed == 0 else core_len / speed
-        for (_, _, _, core_len), speed in zip(slices, final_speeds)
-    ]
-    total_weight = sum(weights) or 1
-    done_weight = 0.0
-
     final_audio = None
     prev_i = prev_speed = prev_volume = None
     for i, ((audio_slice, pre, post, core_len), speed, volume) in enumerate(
@@ -157,7 +131,7 @@ def process_audio(
         start_time = 0 if i == 0 else timestamps[i - 1]
         end_time = timestamps[i] if i < len(timestamps) else "end"
 
-        # speed 0 marks a section the user skipped in the UI
+        # speed 0 marks a section to remove
         if speed == 0 or core_len == 0:
             print(f"Removing segment {i + 1} ({start_time}s - {end_time}s)")
             continue
@@ -183,22 +157,14 @@ def process_audio(
             final_audio = crossfade(final_audio, segment, sr, is_stereo)
         prev_i, prev_speed, prev_volume = i, speed, volume
 
-        done_weight += weights[i]
-        progress_cb(
-            0.10 + 0.75 * done_weight / total_weight,
-            f"section {i + 1}/{len(slices)}",
-        )
-
     if final_audio is None:
         raise ValueError("All segments removed, nothing to export.")
 
     print("Writing output...")
-    progress_cb(0.85, "encoding")
     # RMS compensation in stretch() can push peaks past ±1, which the 16-bit
     # WAV write would hard-clip into distortion; clip explicitly instead
     np.clip(final_audio, -1.0, 1.0, out=final_audio)
-    # keep the intermediate next to the final file, so it lands in outputs/ for
-    # the server (where cleanup sweeps it) instead of whatever the cwd happens to be
+    # keep the intermediate next to the final file rather than in the cwd
     temp_wav = os.path.join(
         os.path.dirname(os.path.abspath(output_path)),
         f"temp_output_{uuid.uuid4().hex}.wav",
@@ -214,7 +180,6 @@ def process_audio(
             stderr=subprocess.DEVNULL,
         )
         os.remove(temp_wav)
-        progress_cb(1.0, "done")
         print(f"Done: {output_path}")
     except Exception as e:
         print(f"MP3 conversion failed, WAV kept at: {temp_wav}. Error: {e}")

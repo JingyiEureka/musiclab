@@ -68,16 +68,12 @@ kept in step with the browser engine (ADR 0011).
    box.
 
 2. **Memory scales with output duration.** Export holds the source, the render
-   and the mp3 at once. Slowing down is what costs: a 3:11 source at 0.38x
-   peaked at 263 MB on a phone and completed, but a 5-minute file at 0.5x
-   projects to about 450 MB, which may kill the tab on older iPhones with no
-   error. See `design/handoff.md` section 6.2.
+   and the mp3 at once, so slowing down is what costs. A 3:11 source at 0.25x,
+   the slowest the UI allows, peaked at 367 MB on an iPhone and completed.
+   Older phones are unmeasured; iOS closes a tab that runs out of memory
+   without a message.
 
-3. **Mixed logging styles**. `app/speed_changer.py` uses `print` while
-   `app/main.py` uses `logging`. Only matters if the script is ever run inside
-   the server again.
-
-4. **Shared mutable frontend state**. The ES modules under `static/js/` pass
+3. **Shared mutable frontend state**. The ES modules under `static/js/` pass
    state through one exported `state` object (`state.js`) rather than through
    arguments. It keeps the module graph acyclic and the split small, but any
    module can write any field, so the data flow is not enforced by the

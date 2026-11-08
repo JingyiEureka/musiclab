@@ -66,7 +66,7 @@ per-boundary dip UI is not worth building.</p>
 <script type="module">
 import {
     renderStretched, renderTimeline, buildTimeMap, sliceBuffer,
-    stretchedDuration, PRESET_EXPORT, PRESET_PREVIEW,
+    stretchedDuration, PRESET_EXPORT,
     outputToSource, sourceToOutput, needsRender,
 } from '../js/stretch.js';
 import { audioBufferToWav, downloadBlob } from '../js/wav.js';
@@ -448,23 +448,20 @@ const TIMELINE_TESTS = [
         },
     },
     {
-        // The number that decides whether buffered preview feels immediate.
-        name: '5.11 render latency by preset (16 s window)',
+        // Every edit is followed by a render before Play can start.
+        name: '5.11 render latency (16 s window)',
         async run() {
             const src = multiToneBuffer([440, 880], 8); // 16 s
             const segs = [
                 { endTime: 8, speed: 1.0, volume: 1, skip: false, seam: seam(20) },
                 { endTime: null, speed: 0.84, volume: 1, skip: false, seam: seam(20) },
             ];
-            const t1 = performance.now();
-            await renderTimeline(src, segs, { preset: PRESET_PREVIEW });
-            const cheap = Math.round(performance.now() - t1);
-            const t2 = performance.now();
+            const t0 = performance.now();
             const out = await renderTimeline(src, segs, { preset: PRESET_EXPORT });
-            const good = Math.round(performance.now() - t2);
+            const ms = Math.round(performance.now() - t0);
             return {
-                pass: cheap < 4000 && good < 6000,
-                info: `cheaper ${cheap} ms, default ${good} ms for 16 s (desktop)`,
+                pass: ms < 6000,
+                info: `${ms} ms for 16 s (desktop)`,
                 out,
             };
         },

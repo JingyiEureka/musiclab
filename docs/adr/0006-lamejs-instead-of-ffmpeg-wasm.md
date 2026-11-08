@@ -88,4 +88,5 @@ Two consequences for the implementation:
   the Fraunhofer/Technicolor licensing programme. Historically that, not
   licensing, was the obstacle to shipping an MP3 encoder commercially.
 
-Detail in `design/step3-plan.md` section 1.5.
+Detail was in `design/step3-plan.md` section 1.5, removed once Step 3 shipped;
+it is in git history.

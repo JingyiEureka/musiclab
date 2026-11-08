@@ -22,8 +22,7 @@ page-load path. Note ADR 0006 estimated "~50 KB" for lamejs; the real figures ar
 the ones above.
 
 Only `static/js/mp3.js` may reference this file or the `lamejs` global, so the
-encoder can be replaced in one place (ADR 0006 amendment, design decision 8 in
-`design/step3-plan.md`).
+encoder can be replaced in one place (ADR 0006 amendment).
 
 Loading is by injected `<script>`, not `import`: the file is a classic script
 that defines a global `lamejs` function and calls it to attach

@@ -320,8 +320,8 @@ header pre {
     margin-top: 4px;
 }
 
-/* restart | play | preview | split spread across one line, wrapping on
-   screens too narrow to fit all four */
+/* restart | play | split spread across one line, wrapping on
+   screens too narrow to fit all three */
 .player-controls {
     justify-content: space-between;
     flex-wrap: wrap;

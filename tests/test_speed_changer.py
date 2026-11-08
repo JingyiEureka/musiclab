@@ -253,24 +253,6 @@ class TestProcessAudioVolume:
         result, _ = librosa.load(output_path, sr=None)
         assert np.max(np.abs(result)) <= 1.05  # mp3 encoding overshoot tolerance
 
-    def test_progress_callback_monotonic_and_complete(self, tmp_path):
-        input_path = str(tmp_path / "in.wav")
-        output_path = str(tmp_path / "out.mp3")
-        self.write_sine_wav(input_path)
-
-        calls = []
-        process_audio(
-            input_path,
-            output_path,
-            timestamps=[1.0],
-            speeds=[1.0, 0.8],
-            progress_cb=lambda frac, stage: calls.append((frac, stage)),
-        )
-        fracs = [f for f, _ in calls]
-        assert fracs == sorted(fracs)
-        assert fracs[-1] == 1.0
-        assert any("section" in s for _, s in calls)
-
     def test_stretch_gain_does_not_clip_output(self, tmp_path):
         # RMS compensation after a stretch can push peaks past 1.0 on
         # already-loud input; the output must be clipped back to valid range
