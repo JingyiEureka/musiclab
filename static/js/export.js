@@ -45,7 +45,9 @@ export async function runAndExport() {
         const { buffer } = await getTimeline();
         banner.setText('encoding mp3...');
         const startedAt = performance.now();
-        const blob = await encodeMp3(buffer, { onProgress: renderProgress });
+        const blob = await encodeMp3(buffer, {
+            onProgress: frac => renderProgress({ frac, stage: 'encoding' }),
+        });
         deliver(blob, reportBody, performance.now() - startedAt, buffer);
     } catch (e) {
         stopPet();
