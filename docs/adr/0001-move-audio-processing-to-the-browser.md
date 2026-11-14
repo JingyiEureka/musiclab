@@ -2,6 +2,7 @@
 
 Date: 2026-08-01
 Status: Accepted. Implemented. What became of `process_audio` is recorded in 0011.
+The remaining server (static files, video extraction) is removed by 0012.
 
 ## Context
 

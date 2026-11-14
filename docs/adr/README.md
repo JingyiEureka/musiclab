@@ -16,7 +16,7 @@ committed and kept.
 
 | # | Decision | Status |
 |---|---|---|
-| [0001](0001-move-audio-processing-to-the-browser.md) | Move audio processing from the server to the browser | Accepted, implemented; see 0011 |
+| [0001](0001-move-audio-processing-to-the-browser.md) | Move audio processing from the server to the browser | Accepted, implemented; see 0011, 0012 |
 | [0002](0002-signalsmith-stretch-instead-of-rubber-band.md) | Use Signalsmith Stretch instead of Rubber Band | Accepted, implemented |
 | [0003](0003-keep-the-single-file-section-model.md) | Keep the single-file section model, not a multi-track timeline | Accepted |
 | [0004](0004-boundary-curves-instead-of-automation-lanes.md) | Per-section volume with boundary curves, not automation lanes | Accepted, refined by 0007 |
@@ -27,6 +27,7 @@ committed and kept.
 | [0009](0009-transport-plays-the-rendered-timeline.md) | The transport plays the rendered timeline, not the original file | Accepted, refined by 0010 |
 | [0010](0010-one-playback-path.md) | One playback path: retire Preview, transport renders at export quality | Accepted, implemented |
 | [0011](0011-keep-the-python-path-as-an-offline-script.md) | Keep the Python path as an offline script, not a server path | Accepted, implemented |
+| [0012](0012-host-as-a-static-site.md) | Host as a static site on GitHub Pages; drop server-side video extraction | Accepted |
 
 ## Adding one
 
