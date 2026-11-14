@@ -63,18 +63,28 @@ answers, and a full render and export in headless Chrome.
 ## 2b. Cutover to GitHub Pages
 
 - [x] 1. Code: server removed, relative paths, Pages workflow, ADR 0012.
-- [ ] 2. Make the repo public; enable Pages with source "GitHub Actions"; merge;
-      check `https://jingyieureka.github.io/musiclab/` (browser suite, an
-      export, the iPhone).
-- [ ] 3. Set the custom domain `musiclab.jyylab.cc` in the Pages settings and
-      change its DNS record to `CNAME jingyieureka.github.io`; enable "Enforce
-      HTTPS" once the certificate is issued. The old server keeps answering
-      until DNS has moved.
+- `main` has a ruleset ("protect main") blocking force pushes and deletion,
+  since a push to `main` is now a deploy.
+- [x] 2. Repo public, Pages source "GitHub Actions", PR #2 merged. On
+      github.io: all files 200, 4 browser suites green, a real-UI export at 95%
+      (90.13 s to 94.90 s), mp4 loads in Chrome. iPhone not yet tried.
+- [ ] 3. Custom domain `musiclab.jyylab.cc` set in Pages, and the Cloudflare
+      record changed to `CNAME jingyieureka.github.io`, DNS only (2026-11-15).
+      Remaining: GitHub issues the certificate (`gh api
+      repos/JingyiEureka/musiclab/pages -q .https_certificate`; still null at
+      the end of that session), then enable "Enforce HTTPS", then run the
+      browser suites and an export against `https://musiclab.jyylab.cc`, then
+      the iPhone. Until the certificate exists, visitors already on the new DNS
+      get a certificate error over https.
+      **This drops the password.** The old site sits behind nginx basic auth
+      (`auth_basic "MusicLab"`, `/etc/nginx/musiclab.htpasswd`, added around
+      2026-11-09); Pages cannot do auth. The user chose on 2026-11-15 to drop
+      it. If a gate is wanted later: Cloudflare Pages plus Cloudflare Access.
 - [ ] 4. After a quiet period, and only on the user's go-ahead: on xkec2,
       archive `/home/ubuntu/jingyi` to `~/jingyi-pre-browser-20261109.tgz`,
       `docker compose down`, delete the folder (`outputs/` needs sudo), remove
-      both `kakakakakaka/music_lab` images and the nginx site for
-      `musiclab.jyylab.cc`.
+      both `kakakakakaka/music_lab` images, the nginx server blocks for
+      `musiclab.jyylab.cc` and `/etc/nginx/musiclab.htpasswd`.
 
 ## 3. Vendored libraries
 
