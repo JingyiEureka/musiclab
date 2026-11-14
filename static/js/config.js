@@ -1,8 +1,5 @@
 // Tunables and fixed strings shared across modules.
 export const CONFIG = {
-    // the page is served by the API itself, so requests are same-origin.
-    // The only server call is /extract-audio/ for video files.
-    API_BASE_URL: '',
     MAX_UPLOAD_BYTES: 50 * 1024 * 1024,
     WAVEFORM_COLOR_PLAYED: '#d4a0b5',
     WAVEFORM_COLOR_UNPLAYED: '#666666',

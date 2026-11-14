@@ -1,6 +1,6 @@
 # MusicLab — Music Speed Changer
 
-Slice audio (or video) at arbitrary timestamps, adjust each section's speed and volume independently, and export as MP3.
+Slice audio at arbitrary timestamps, adjust each section's speed and volume independently, and export as MP3.
 
 ```
 ╔══════════════════════════════════╗
@@ -13,12 +13,12 @@ Architecture diagrams and known trade-offs: see [ARCHITECTURE.md](ARCHITECTURE.m
 ## Layout
 
 ```
-app/        FastAPI server (main.py) and the offline CLI script (speed_changer.py)
-static/     index.html, styles.css, and js/ (ES modules, entry point main.js)
+app/        the offline CLI script (speed_changer.py)
+static/     the whole site: index.html, styles.css, js/ (ES modules, entry point main.js)
 tests/      pytest suite
 ```
 
-`assets/` (sample media), `archive/` (old prototypes), and `temp_uploads/` are runtime or local-only folders and are not tracked in git.
+`assets/` (sample media) and `archive/` (old prototypes) are local-only folders and are not tracked in git.
 
 ## CLI (offline)
 
@@ -37,49 +37,28 @@ Edit `cut_timestamps`, `segment_speeds`, and `input_file` in the `__main__` bloc
 
 ## Web App
 
-```
-conda activate librosa
-uvicorn app.main:app --reload --port 8000
-```
-
-Open `http://127.0.0.1:8000`, upload an audio or video file, split it into sections and set each section's speed and volume, then export as MP3. Optionally tick "also download a report" to get a text summary of the edit alongside the MP3.
-
-The edit is saved in the browser (IndexedDB), so a refresh or crash offers to restore your last session for a week. Processing and export run in the browser; only video files are sent to the server, to extract their audio track.
-
-## Docker
+Live at https://musiclab.jyylab.cc. To run it locally:
 
 ```
-docker compose up
+python3 -m http.server 8000 -d static
 ```
 
-Or pull the prebuilt image directly:
+Open `http://127.0.0.1:8000`, upload an audio file, split it into sections and set each section's speed and volume, then export as MP3. Optionally tick "also download a report" to get a text summary of the edit alongside the MP3.
 
-```
-docker run -p 8000:8000 kakakakakaka/music_lab:latest
-```
+Video files load where the browser can decode their audio track (Chrome, Android), not in iPhone Safari.
 
-Open `http://127.0.0.1:8000`.
+The edit is saved in the browser (IndexedDB), so a refresh or crash offers to restore your last session for a week. Everything runs in the browser; no file is uploaded.
 
-## Deploy to production
+## Deploy
 
-When `static/styles.css` changes, bump the `?v=` query string on its tag in `static/index.html` so browsers drop their cached copies. The JS modules need no bump: they are served with `Cache-Control: no-cache` and revalidate on every load.
+Push to `main`. `.github/workflows/pages.yml` publishes `static/` to GitHub Pages, usually within a minute. Pages caches files for 10 minutes, so visitors may see the old version for that long.
 
-The production server is linux/amd64. On an Apple Silicon Mac a plain `docker build` produces an arm64 image that crashes there with `exec format error`, so always build with buildx:
-
-```
-docker buildx build --platform linux/amd64 -t kakakakakaka/music_lab:latest --push .
-```
-
-Then on the server:
-
-```
-docker compose pull && docker compose up -d
-```
+When `static/styles.css` changes, bump the `?v=` query string on its tag in `static/index.html`.
 
 ## Dev
 
-The test suite covers the CLI script too, so install both `requirements.txt` and
-`requirements-cli.txt` (the `librosa` conda env has them).
+The test suite covers the CLI script too, so install `requirements-cli.txt`
+plus `pytest` and `ruff` (the `librosa` conda env has them).
 
 ```
 conda run -n librosa ruff check . && conda run -n librosa ruff format --check . && conda run -n librosa python -m pytest -v

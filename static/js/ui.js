@@ -85,7 +85,7 @@ export function stopPet() {
 // just look frozen.
 export function setUploadLoading(loading) {
     document.getElementById('upload-hint').textContent =
-        loading ? 'loading your file...' : 'Drop or select audio / video';
+        loading ? 'loading your file...' : 'Drop or select an audio file';
     if (loading) startPet('upload-pet'); else stopPet();
 }
 

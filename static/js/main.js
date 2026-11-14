@@ -45,15 +45,15 @@ async function restoreSession(saved) {
     let ctx;
     try {
         ctx = new (window.AudioContext || window.webkitAudioContext)();
-        // Read the stored blob into memory once and build the upload File from
-        // those bytes: WebKit (all iPhone browsers) can fail to POST a File
+        // Read the stored blob into memory once and build the File from those
+        // bytes: WebKit (all iPhone browsers) once failed to upload a File
         // still backed by IndexedDB blob storage with a generic "Load failed".
         const bytes = await saved.blob.arrayBuffer();
-        const upload = new File([bytes], saved.filename, { type: saved.blob.type });
+        const file = new File([bytes], saved.filename, { type: saved.blob.type });
         state.audioBuffer = await ctx.decodeAudioData(bytes);
         if (state.audioCtx) state.audioCtx.close();
         state.audioCtx = ctx;
-        state.audioFile = upload;
+        state.audioFile = file;
         state.totalDuration = state.audioBuffer.duration;
         state.playOffset = 0;
         state.isPlaying = false;
@@ -73,17 +73,6 @@ async function restoreSession(saved) {
     }
 }
 
-// Safari cannot decode video containers; extract the audio track server-side.
-async function extractAudioOnServer(file) {
-    const fd = new FormData();
-    fd.append('file', file);
-    const resp = await fetch(`${CONFIG.API_BASE_URL}/extract-audio/`, { method: 'POST', body: fd });
-    if (!resp.ok) throw new Error('this file could not be decoded');
-    const blob = await resp.blob();
-    const name = file.name.replace(/\.[^.]+$/, '') + '.mp3';
-    return new File([blob], name, { type: 'audio/mpeg' });
-}
-
 async function handleFile(file) {
     hideUploadError();
     if (file.size > CONFIG.MAX_UPLOAD_BYTES) {
@@ -96,13 +85,10 @@ async function handleFile(file) {
     let ctx;
     try {
         ctx = new (window.AudioContext || window.webkitAudioContext)();
-        try {
-            state.audioFile = file;
-            state.audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
-        } catch (err) {
-            state.audioFile = await extractAudioOnServer(file);
-            state.audioBuffer = await ctx.decodeAudioData(await state.audioFile.arrayBuffer());
-        }
+        // Chrome and Android also decode the audio track of a video file;
+        // Safari does not, and there is no server to extract it.
+        state.audioFile = file;
+        state.audioBuffer = await ctx.decodeAudioData(await file.arrayBuffer());
         if (state.audioCtx) state.audioCtx.close();
         state.sourceNode = null;
         state.audioCtx = ctx;
@@ -126,7 +112,7 @@ async function handleFile(file) {
         state.audioFile = null;
         state.audioBuffer = null;
         state.totalDuration = 0;
-        showUploadError('Could not load this file - try a different one or convert it to MP3/WAV.');
+        showUploadError('Could not read this file - please use an audio file (mp3, m4a, wav).');
     } finally {
         setUploadLoading(false);
         setBusy(false);

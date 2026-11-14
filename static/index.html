@@ -7,7 +7,7 @@
     <title>MusicLab &mdash; music editing made easy</title>
     <meta name="description"
         content="MusicLab lets you adjust the playback speed of audio sections independently and export the result as an MP3." />
-    <link rel="stylesheet" href="/static/styles.css?v=19" />
+    <link rel="stylesheet" href="styles.css?v=19" />
 </head>
 
 <body>
@@ -30,7 +30,7 @@
             <div class="upload-zone" id="upload-zone">
                 <input type="file" id="audio-file-input"
                     accept="audio/*,video/*,.mp3,.wav,.flac,.ogg,.oga,.opus,.m4a,.aac,.aiff,.aif,.mp4,.mov,.webm" />
-                <span class="hint" id="upload-hint">Drop or select audio / video</span>
+                <span class="hint" id="upload-hint">Drop or select an audio file</span>
                 <pre id="upload-pet"></pre>
             </div>
             <div id="upload-error" class="upload-error"></div>
@@ -123,8 +123,8 @@
         </div>
     </div>
 
-    <!-- ES modules; served with Cache-Control: no-cache so no ?v= bump is needed -->
-    <script type="module" src="/static/js/main.js"></script>
+    <!-- ES modules; GitHub Pages caches them for 10 minutes, so a deploy reaches everyone within that -->
+    <script type="module" src="js/main.js"></script>
 </body>
 
 </html>

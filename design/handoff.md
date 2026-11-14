@@ -1,7 +1,9 @@
 # Handoff
 
-Last updated 2026-11-09. The browser refactor is merged to `main` (PR #1) and
-**deployed to production** on 2026-11-09.
+Last updated 2026-11-15. The browser refactor is merged to `main` (PR #1) and
+**deployed to production** on 2026-11-09. On 2026-11-15 the server was removed
+from the code in favour of GitHub Pages (ADR 0012); the cutover is in progress,
+see section 2b.
 
 ## 1. Where things stand
 
@@ -12,18 +14,19 @@ deleted once their work shipped and are in git history.
 
 - Rendering, playback and MP3 export all run in the browser. One render, at the
   export preset, serves both playback and export (ADR 0010).
-- The server serves the page and `POST /extract-audio/`, for video containers
-  Safari cannot decode (ADR 0001).
-- `app/speed_changer.py` is an offline command-line script, not used by the
-  server and not in the image (ADR 0011).
+- There is no server: `static/` is the whole site, published to GitHub Pages
+  (ADR 0012). Video files load only where the browser decodes them.
+- `app/speed_changer.py` is an offline command-line script (ADR 0011).
 
 Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
-7 mp3) in `static/dev/stretch-test.html`, plus **79 pytest**. All green.
+7 mp3) in `static/dev/stretch-test.html`, plus **74 pytest**. All green.
 
 ## 2. Open items
 
 - [ ] **Check the browser engine for the two loudness defects fixed in the
-      Python script** on 2026-08-19. Neither has been measured in
+      Python script** on 2026-08-19. Deferred by the user on 2026-11-15: a
+      check, not a fix; do it if dancers report loud section starts or a
+      thinner sound. Neither has been measured in
       `static/js/stretch.js`; the script is the known-good reference for an A/B.
   1. *Independent L/R stretching.* Stretching each channel separately
      decorrelated them (L/R correlation ~0.45 to ~0.00) and the phantom centre
@@ -41,9 +44,9 @@ Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
 - **Product direction:** decided 2026-11-08 to ship and gather feedback from
   the dancers before planning new features.
 
-## 2a. Production
+## 2a. Production (old server, being retired)
 
-Deployed 2026-11-09 from `main` (`51524f0`), steps in `README.md`. Verified on
+Deployed 2026-11-09 from `main` (`51524f0`). Verified on
 the live site: new modules served, `/upload-audio/` 404, `/extract-audio/`
 answers, and a full render and export in headless Chrome.
 
@@ -53,6 +56,25 @@ answers, and a full render and export in headless Chrome.
   then `docker compose up -d` in `/home/ubuntu/jingyi`. Remove the tag once the
   new version has run without complaints for a while.
 - A browser tab holding the old page will fail to export until reloaded.
+- The folder still holds July copies of the old code and an empty root-owned
+  `outputs/`. Not tidied separately: it is archived and deleted as a whole in
+  2b step 4.
+
+## 2b. Cutover to GitHub Pages
+
+- [x] 1. Code: server removed, relative paths, Pages workflow, ADR 0012.
+- [ ] 2. Make the repo public; enable Pages with source "GitHub Actions"; merge;
+      check `https://jingyieureka.github.io/musiclab/` (browser suite, an
+      export, the iPhone).
+- [ ] 3. Set the custom domain `musiclab.jyylab.cc` in the Pages settings and
+      change its DNS record to `CNAME jingyieureka.github.io`; enable "Enforce
+      HTTPS" once the certificate is issued. The old server keeps answering
+      until DNS has moved.
+- [ ] 4. After a quiet period, and only on the user's go-ahead: on xkec2,
+      archive `/home/ubuntu/jingyi` to `~/jingyi-pre-browser-20261109.tgz`,
+      `docker compose down`, delete the folder (`outputs/` needs sudo), remove
+      both `kakakakakaka/music_lab` images and the nginx site for
+      `musiclab.jyylab.cc`.
 
 ## 3. Vendored libraries
 
@@ -96,11 +118,11 @@ edit).
 ## 5. Running and testing
 
 ```
-# app -- --no-capture-output or uvicorn's logs are swallowed and it looks hung
-conda run --no-capture-output -n librosa python -m uvicorn app.main:app --port 8000
+# app
+python3 -m http.server 8000 -d static
 
 # browser test harness (needs HTTP, not file://)
-http://127.0.0.1:8000/static/dev/stretch-test.html
+http://127.0.0.1:8000/dev/stretch-test.html
 ```
 
 Before committing, per `CLAUDE.md`:
@@ -127,9 +149,8 @@ Gotchas:
   event handlers, and ruff and pytest only read Python. A stray U+00B7 once
   shipped this way under a commit claiming "No code change". Read the diff
   before committing; do not trust `git add -A`.
-- A background uvicorn started from the wrong directory dies with
-  `No module named 'app'` and silently serves nothing. The symptom,
-  `window.runStretchTests is not a function`, looks like a module error.
+- Serve `static/` (`-d static`), as Pages does; the harness is then at
+  `/dev/stretch-test.html`, not `/static/dev/...`.
 - Module tests are not product tests. A feature once passed 26 tests while its
   button was hidden by an inline style. `TestSinglePlaybackPath` exists because
   of that; drive changes through the real UI as well.
@@ -138,17 +159,14 @@ Gotchas:
 
 `audioWorklet` is `[SecureContext]`, so the whole client-side render path is
 dead over plain http on anything but `localhost` / `127.0.0.1`. Startup shows a
-banner when `!window.isSecureContext`. Production is fine: `musiclab.jyylab.cc`
-is nginx with a Let's Encrypt certificate and a `301` from port 80, proxying to
-`localhost:8000`.
+banner when `!window.isSecureContext`. Production is fine: GitHub Pages serves https.
 
 Testing on a phone over the LAN therefore needs TLS. On Android,
 `adb reverse tcp:8000 tcp:8000` avoids it. For iOS, what worked:
 
-**Keep TLS out of uvicorn.** Production terminates TLS in nginx, so terminate
-it in nginx for testing too: an nginx container listening on 8443, with
-`proxy_pass http://host.docker.internal:8000/` (uvicorn started with
-`--host 0.0.0.0`). Bake files into the image: Docker Desktop cannot bind-mount
+**Keep TLS out of the app server.** Terminate it in nginx for testing: an nginx
+container listening on 8443, with `proxy_pass http://host.docker.internal:8000/`
+(`python3 -m http.server 8000 -d static --bind 0.0.0.0`). Bake files into the image: Docker Desktop cannot bind-mount
 from `~/Desktop` without Full Disk Access.
 
 **iOS needs a CA plus a leaf with `extendedKeyUsage = serverAuth`.** A one-line
