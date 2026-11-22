@@ -33,15 +33,15 @@
     --surface: #1e2125;
     --surface2: #262a2f;
     --field: #0e1012;
-    --field-fg: #9fe3da;
+    --field-fg: #e6e8eb;
     --fg: #e6e8eb;
     --dim: #8a9099;
     --accent: #f0a6c4;
     --on-accent: #15171a;
     --border: #2e3238;
     --err: #ff8080;
-    --sec-a: rgba(94, 201, 190, 0.3);
-    --sec-b: rgba(236, 184, 92, 0.28);
+    --sec-a: rgba(214, 138, 170, 0.3);
+    --sec-b: rgba(120, 146, 200, 0.3);
     --hatch: rgba(255, 255, 255, 0.1);
     --wave-bg: #101215;
     --wave-played: #f0a6c4;
