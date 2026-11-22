@@ -1,9 +1,9 @@
 # Handoff
 
-Last updated 2026-11-15. The browser refactor is merged to `main` (PR #1) and
+Last updated 2026-11-22. The browser refactor is merged to `main` (PR #1) and
 **deployed to production** on 2026-11-09. On 2026-11-15 the server was removed
-from the code in favour of GitHub Pages (ADR 0012); the cutover is in progress,
-see section 2b.
+from the code in favour of GitHub Pages (ADR 0012); since 2026-11-22 the live domain is served by Pages,
+see section 2b (iPhone test and server shutdown remain).
 
 ## 1. Where things stand
 
@@ -68,14 +68,14 @@ answers, and a full render and export in headless Chrome.
 - [x] 2. Repo public, Pages source "GitHub Actions", PR #2 merged. On
       github.io: all files 200, 4 browser suites green, a real-UI export at 95%
       (90.13 s to 94.90 s), mp4 loads in Chrome. iPhone not yet tried.
-- [ ] 3. Custom domain `musiclab.jyylab.cc` set in Pages, and the Cloudflare
+- [x] 3. Custom domain `musiclab.jyylab.cc` set in Pages, and the Cloudflare
       record changed to `CNAME jingyieureka.github.io`, DNS only (2026-11-15).
-      Remaining: GitHub issues the certificate (`gh api
-      repos/JingyiEureka/musiclab/pages -q .https_certificate`; still null at
-      the end of that session), then enable "Enforce HTTPS", then run the
-      browser suites and an export against `https://musiclab.jyylab.cc`, then
-      the iPhone. Until the certificate exists, visitors already on the new DNS
-      get a certificate error over https.
+      The certificate stayed null for a week; removing and re-adding the
+      custom domain in Settings > Pages got it issued within minutes
+      (2026-11-22). "Enforce HTTPS" is on. On the live domain: secure
+      context, 4 browser suites green, a real-UI export at 95% (105.56 s to
+      111.10 s). Remaining: the iPhone test; the http-to-https redirect was
+      not yet active right after enabling it.
       **This drops the password.** The old site sits behind nginx basic auth
       (`auth_basic "MusicLab"`, `/etc/nginx/musiclab.htpasswd`, added around
       2026-11-09); Pages cannot do auth. The user chose on 2026-11-15 to drop
