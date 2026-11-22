@@ -228,3 +228,42 @@ class TestPlayerTimeLabels:
         assert len(rules) >= 1
         body = rules[0]
         assert "position: absolute" in body or "position:absolute" in body
+
+
+class TestStudioRedesign:
+    """Guards for the move from the terminal look to the Studio look (ADR 0013)."""
+
+    html = read_html()
+    css = read_css()
+
+    def read_js(self, name):
+        with open(os.path.join(STATIC, "js", name), "r") as f:
+            return f.read()
+
+    def test_no_bracket_labels_left(self):
+        """Buttons are plain words now; a leftover '[ Play ]' would show the old style."""
+        for text in (self.html, self.read_js("player.js")):
+            assert "[ " not in text, "bracket button label left over"
+
+    def test_play_label_is_updated_without_wiping_the_icons(self):
+        """Setting textContent on the button would delete its SVG icons."""
+        player = self.read_js("player.js")
+        assert 'id="play-label"' in self.html
+        assert "getElementById('play-btn').textContent" not in player
+
+    def test_waveform_colours_come_from_css(self):
+        waveform = self.read_js("waveform.js")
+        assert not re.search(r"#[0-9a-fA-F]{3,6}\b", waveform)
+        for token in ("--wave-played", "--wave-unplayed"):
+            assert token in waveform
+            assert token + ":" in self.css
+
+    def test_vendored_fonts_ship_with_their_licence(self):
+        fonts = os.path.join(STATIC, "vendor", "fonts")
+        for name in ("IBMPlexSans-OFL.txt", "IBMPlexMono-OFL.txt"):
+            assert os.path.exists(os.path.join(fonts, name))
+        for url in re.findall(r"url\('([^']+)'\)", self.css):
+            assert os.path.exists(os.path.join(STATIC, url)), f"missing font {url}"
+
+    def test_no_external_font_host(self):
+        assert "fonts.googleapis.com" not in self.html + self.css

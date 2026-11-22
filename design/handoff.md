@@ -1,6 +1,6 @@
 # Handoff
 
-Last updated 2026-11-22. The browser refactor is merged to `main` (PR #1) and
+Last updated 2026-11-22 (UI redesign in progress on `ui-refresh`). The browser refactor is merged to `main` (PR #1) and
 **deployed to production** on 2026-11-09. On 2026-11-15 the server was removed
 from the code in favour of GitHub Pages (ADR 0012); since 2026-11-22 the live
 domain is served by Pages and the old server is shut down (section 2b).
@@ -23,6 +23,15 @@ Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
 
 ## 2. Open items
 
+- [ ] **UI redesign (branch `ui-refresh`, 2026-11-22).** Studio look in our own
+      CSS, no library or framework (ADR 0013). Verified in headless Chromium at
+      320 / 375 / 390 / 601 / 640 / 768 / 1280 px: no sideways page scroll,
+      split / stepper / merge / drag / skip / play / export with report /
+      resume all work, 37 browser tests and pytest green. **Not yet checked on
+      a real iPhone** (Safari is the only engine not covered). Merging deploys.
+- [ ] **Try Peaks.js for the waveform** only if dragging still feels clumsy
+      after the redesign (deferred by the user on 2026-11-22).
+
 - [ ] **Check the browser engine for the two loudness defects fixed in the
       Python script** on 2026-08-19. Deferred by the user on 2026-11-15: a
       check, not a fix; do it if dancers report loud section starts or a
@@ -37,8 +46,9 @@ Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
      loud. The script fixed it by carrying 1 s of neighbouring audio into the
      stretcher. The browser renders one continuous time map (ADR 0005) rather
      than slices, which should avoid it, but that is not measured.
-- [ ] **Verify the seam UI by eye.** It passes structural tests, but gradient
-      weight and crowding on a narrow screen have never been looked at.
+- [ ] **Verify the seam UI by eye.** Looked at in screenshots during the
+      redesign (desktop row, phone cards down to 320 px); still to be judged on
+      a real phone with real volume changes.
 - [ ] **Pre-warm the WASM module** on file open. Low value: the whole render is
       2.4-3.2 s on the phone, which caps what it can recover.
 - **Product direction:** decided 2026-11-08 to ship and gather feedback from

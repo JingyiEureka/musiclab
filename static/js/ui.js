@@ -1,4 +1,4 @@
-// Small DOM helpers: busy state, notifications, the loading pet, and the
+// Small DOM helpers: busy state, notifications, the loading spinner, and the
 // status banner. Everything here is presentation only.
 import { state } from './state.js';
 
@@ -50,46 +50,35 @@ export function hideResumeModal() {
     document.getElementById('resume-modal').style.display = 'none';
 }
 
-// ── Lab pet + progress bar (shown in the status banner) ─────────
-const PET_FRAMES = [
-    ' /\\_/\\  .♪ \nd( o.o )b',
-    ' /\\_/\\  ♪. \nd( o.o )b',
-    ' /\\_/\\ ♪ .*\nd( -.- )b',
-    ' /\\_/\\  .♫ \nd( ^.^ )b',
-];
-let petTimer = null;
-let petEl = null;
+// ── Spinner + progress bar (shown in the status banner) ─────────
+// The names startPet/stopPet are kept from the ASCII pet they replaced, so the
+// callers in export.js and session.js did not change.
+let spinnerEl = null;
 
 export function startPet(elId = 'pet-frame') {
-    petEl = document.getElementById(elId);
-    petEl.style.display = 'block';
-    petEl.textContent = PET_FRAMES[0];
-    let i = 1;
-    clearInterval(petTimer);
-    petTimer = setInterval(() => {
-        petEl.textContent = PET_FRAMES[i % PET_FRAMES.length];
-        i++;
-    }, 500);
+    if (spinnerEl) spinnerEl.hidden = true;
+    spinnerEl = document.getElementById(elId);
+    spinnerEl.hidden = false;
 }
 
 export function stopPet() {
-    clearInterval(petTimer);
-    petTimer = null;
-    if (petEl) petEl.style.display = 'none';
-    petEl = null;
-    document.getElementById('progress-line').textContent = '';
+    if (spinnerEl) spinnerEl.hidden = true;
+    spinnerEl = null;
+    renderProgress(null);
 }
+
+const UPLOAD_HINT = 'Drop a song here or tap to choose one';
 
 // Loading state inside the upload zone, used while a file is being read
 // and decoded (which can take a while for big files) so the zone does not
 // just look frozen.
 export function setUploadLoading(loading) {
     document.getElementById('upload-hint').textContent =
-        loading ? 'loading your file...' : 'Drop or select an audio file';
+        loading ? 'Loading your file...' : UPLOAD_HINT;
     if (loading) startPet('upload-pet'); else stopPet();
 }
 
-// Fast decodes would flash the loading pet for a single frame, which looks
+// Fast decodes would flash the spinner for a single frame, which looks
 // like a glitch; hold it briefly so the state change is perceivable.
 const MIN_LOADING_MS = 600;
 
@@ -99,12 +88,12 @@ export function loadingHold(t0) {
 }
 
 export function renderProgress(progress) {
-    const el = document.getElementById('progress-line');
-    if (!progress) { el.textContent = ''; return; }
-    const width = 16;
-    const filled = Math.round(progress.frac * width);
-    el.textContent = '[' + '#'.repeat(filled) + '.'.repeat(width - filled) + '] '
-        + Math.round(progress.frac * 100) + '% - ' + progress.stage;
+    const bar = document.getElementById('progress-bar');
+    const text = document.getElementById('progress-text');
+    bar.hidden = !progress;
+    if (!progress) { text.textContent = ''; return; }
+    bar.value = progress.frac;
+    text.textContent = Math.round(progress.frac * 100) + '% - ' + progress.stage;
 }
 
 // ── Status banner ───────────────────────────────────────────────

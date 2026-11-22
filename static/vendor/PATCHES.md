@@ -4,9 +4,11 @@
 |---|---|---|---|
 | `signalsmith-stretch.mjs` | npm `signalsmith-stretch@1.3.2` | MIT | **yes** -- two patches below |
 | `lamejs.js` | npm `lamejs@1.2.1` (`lame.all.js`) | LGPL-3.0 | no |
+| `fonts/ibm-plex-*.woff2` | npm `@fontsource/ibm-plex-sans@5.3.0`, `@fontsource/ibm-plex-mono@5.3.0` (latin subset) | SIL OFL 1.1 | no |
 
 Licence texts live beside the code: `lamejs-LICENSE.txt`, `LGPL-3.0.txt`,
-`GPL-3.0.txt`. Signalsmith is MIT and needs only attribution.
+`GPL-3.0.txt`, and `fonts/IBMPlexSans-OFL.txt`, `fonts/IBMPlexMono-OFL.txt`.
+Signalsmith is MIT and needs only attribution.
 
 ## lamejs.js -- unpatched
 

@@ -28,6 +28,7 @@ committed and kept.
 | [0010](0010-one-playback-path.md) | One playback path: retire Preview, transport renders at export quality | Accepted, implemented |
 | [0011](0011-keep-the-python-path-as-an-offline-script.md) | Keep the Python path as an offline script, not a server path | Accepted, implemented |
 | [0012](0012-host-as-a-static-site.md) | Host as a static site on GitHub Pages; drop server-side video extraction | Accepted |
+| [0013](0013-studio-look-in-own-css.md) | Studio look in our own CSS; no UI library, no framework | Accepted |
 
 ## Adding one
 
