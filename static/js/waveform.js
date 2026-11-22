@@ -8,6 +8,12 @@ export function getWaveWidth() {
     return Math.max(viewW, Math.ceil(state.totalDuration * CONFIG.WAVEFORM_PX_PER_SEC * state.waveformZoom));
 }
 
+// Bar colours come from the stylesheet (--wave-played, --wave-unplayed) so the
+// canvas follows the theme instead of keeping its own copy of the palette.
+function cssColor(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 // Pre-rendered waveform bars; rebuilt only when zoom, size, or file changes
 // so the per-frame playhead redraw is a cheap copy instead of a full rescan.
 let waveformCache = null;
@@ -25,7 +31,7 @@ function buildWaveformCache(waveW, backingW, H, dpr) {
     const barStep = waveW > MAX_BARS ? Math.ceil(waveW / MAX_BARS) : 1;
     const sampleStep = Math.ceil(data.length / waveW);
 
-    ctx.fillStyle = CONFIG.WAVEFORM_COLOR_UNPLAYED;
+    ctx.fillStyle = cssColor('--wave-unplayed');
     for (let x = 0; x < waveW; x += barStep) {
         let min = 1, max = -1;
         const end = Math.min(data.length, (x + barStep) * sampleStep);
@@ -37,7 +43,7 @@ function buildWaveformCache(waveW, backingW, H, dpr) {
         const barH = Math.max(1, (max - min) * mid * 0.9);
         ctx.fillRect(x, mid - barH, barStep, barH * 2);
     }
-    waveformCache = { canvas: off, waveW, height: H * dpr, buffer: state.audioBuffer };
+    waveformCache = { canvas: off, waveW, height: H * dpr, buffer: state.audioBuffer, played: cssColor('--wave-played') };
 }
 
 export function drawWaveform() {
@@ -68,7 +74,7 @@ export function drawWaveform() {
     const playheadX = state.totalDuration > 0 ? (getCurrentTime() / state.totalDuration) * waveW : 0;
     ctx.save();
     ctx.globalCompositeOperation = 'source-atop';
-    ctx.fillStyle = CONFIG.WAVEFORM_COLOR_PLAYED;
+    ctx.fillStyle = waveformCache.played;
     ctx.fillRect(0, 0, playheadX * (backingW / waveW), canvas.height);
     ctx.restore();
 }

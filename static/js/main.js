@@ -169,16 +169,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('play-btn').addEventListener('click', togglePlay);
     document.getElementById('waveform-wrap').addEventListener('click', seekTo);
 
-    // Collapsible "learn more" help panels
-    function wireInfoToggle(btnId, panelId) {
-        document.getElementById(btnId).addEventListener('click', () => {
-            const panel = document.getElementById(panelId);
-            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
-        });
-    }
-    wireInfoToggle('shortcuts-toggle', 'shortcuts-panel');
-    wireInfoToggle('crossfade-toggle', 'crossfade-panel');
-
     // Waveform zoom: keep the playhead anchored at its on-screen position,
     // or keep the view centre in place when the playhead is off-screen
     const zoomSlider = document.getElementById('zoom-slider');

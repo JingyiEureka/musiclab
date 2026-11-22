@@ -85,7 +85,7 @@ export function renderSectionLane() {
     state.segments.forEach((seg, i) => {
         const end = seg.endTime ?? state.totalDuration;
         const block = document.createElement('div');
-        block.className = 'lane-block' + (seg.skip ? ' skipped' : '');
+        block.className = 'lane-block' + (i % 2 ? ' alt' : '') + (seg.skip ? ' skipped' : '');
         block.dataset.index = i;
         block.style.left = (start / state.totalDuration) * waveW + 'px';
         block.style.width = ((end - start) / state.totalDuration) * waveW + 'px';
@@ -177,7 +177,7 @@ export function renderSegments() {
             <span class="seg-start">start</span>
             <span class="seg-field">end</span>
             <span class="seg-field">speed (%)</span>
-            <span class="seg-field">vol (%)</span>
+            <span class="seg-field">volume (%)</span>
             <span class="seg-field seg-skip-col">skip</span>
         `;
         container.appendChild(header);
@@ -189,42 +189,42 @@ export function renderSegments() {
         const skipped = seg.skip;
         const displayStart = i === 0 ? 0 : prevEnd + 0.01;
         const row = document.createElement('div');
-        row.className = 'segment-row' + (skipped ? ' skipped' : '');
+        row.className = 'segment-row' + (i % 2 ? ' alt' : '') + (skipped ? ' skipped' : '');
         row.dataset.index = i;
         row.innerHTML = `
-            <span class="seg-idx">[${segLabel(i)}]</span>
-            <span class="seg-start">${displayStart.toFixed(2)}</span>
-            <span class="seg-field">
+            <span class="seg-idx">${segLabel(i)}</span>
+            <span class="seg-start" data-label="start">${displayStart.toFixed(2)}</span>
+            <span class="seg-field" data-label="end">
                 ${isLast
                     ? `<span class="seg-end-static">${state.totalDuration.toFixed(2)}</span>`
                     : `<button class="stepper" data-kind="end" data-step="-0.1" data-index="${i}"
                         ${skipped ? 'disabled' : ''}>&lt;</button>
-                       <input type="number" class="seg-end" data-index="${i}"
+                       <input type="number" class="seg-end" data-index="${i}" inputmode="decimal"
                         value="${seg.endTime !== null ? seg.endTime.toFixed(2) : ''}" placeholder="end" step="0.01"
                         ${skipped ? 'disabled' : ''} />
                        <button class="stepper" data-kind="end" data-step="0.1" data-index="${i}"
                         ${skipped ? 'disabled' : ''}>&gt;</button>`
                 }
             </span>
-            <span class="seg-field">
+            <span class="seg-field" data-label="speed (%)">
                 <button class="stepper" data-kind="speed" data-step="-5" data-index="${i}"
                     ${skipped ? 'disabled' : ''}>&lt;</button>
-                <input type="number" class="seg-speed" data-index="${i}"
+                <input type="number" class="seg-speed" data-index="${i}" inputmode="numeric"
                     value="${(seg.speed * 100).toFixed(0)}"
                     min="25" max="800" step="1" ${skipped ? 'disabled' : ''} />
                 <button class="stepper" data-kind="speed" data-step="5" data-index="${i}"
                     ${skipped ? 'disabled' : ''}>&gt;</button>
             </span>
-            <span class="seg-field">
+            <span class="seg-field" data-label="volume (%)">
                 <button class="stepper" data-kind="volume" data-step="-10" data-index="${i}"
                     ${skipped ? 'disabled' : ''}>&lt;</button>
-                <input type="number" class="seg-volume" data-index="${i}"
+                <input type="number" class="seg-volume" data-index="${i}" inputmode="numeric"
                     value="${(seg.volume * 100).toFixed(0)}"
                     min="0" max="400" step="1" ${skipped ? 'disabled' : ''} />
                 <button class="stepper" data-kind="volume" data-step="10" data-index="${i}"
                     ${skipped ? 'disabled' : ''}>&gt;</button>
             </span>
-            <span class="seg-field seg-skip-col">
+            <span class="seg-field seg-skip-col" data-label="skip">
                 <label class="switch" title="skipped sections are cut from the export">
                     <input type="checkbox" class="seg-skip" data-index="${i}" ${skipped ? 'checked' : ''} />
                     <span class="slider"></span>

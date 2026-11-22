@@ -7,33 +7,36 @@
     <title>MusicLab &mdash; music editing made easy</title>
     <meta name="description"
         content="MusicLab lets you adjust the playback speed of audio sections independently and export the result as an MP3." />
-    <link rel="stylesheet" href="styles.css?v=19" />
+    <link rel="stylesheet" href="styles.css?v=20" />
 </head>
 
 <body>
     <div class="container">
 
         <!-- Header -->
-        <header>
-            <pre>
-█▀▄▀█ █ █ █▀▀ █ █▀▀   █   █▀█ █▀▄
-█ ▀ █ █ █ ▀▀█ █ █     █   █▀█ █▀▄
-█   █ █▄█ ▄▄█ █ █▄▄   █▄▄ █ █ █▄▀
-            </pre>
+        <header class="app-header">
+            <div class="logo">Music<span>Lab</span></div>
             <div class="tagline">music editing made easy</div>
         </header>
 
         <!-- Upload / Player -->
-        <div class="divider"></div>
-        <div class="section">
+        <section class="section">
             <div class="section-title">Audio preview <span class="player-label" id="player-filename"></span></div>
             <div class="upload-zone" id="upload-zone">
                 <input type="file" id="audio-file-input"
                     accept="audio/*,video/*,.mp3,.wav,.flac,.ogg,.oga,.opus,.m4a,.aac,.aiff,.aif,.mp4,.mov,.webm" />
-                <span class="hint" id="upload-hint">Drop or select an audio file</span>
-                <pre id="upload-pet"></pre>
+                <div class="upload-main">
+                    <span id="upload-pet" class="spinner" hidden></span>
+                    <span class="hint" id="upload-hint">Drop a song here or tap to choose one</span>
+                </div>
+                <div class="upload-formats">mp3, m4a, wav and other audio files, up to 50 MB</div>
+                <ol class="upload-steps">
+                    <li>Load a song</li>
+                    <li>Split it into sections</li>
+                    <li>Set speed, volume or skip, then export an MP3</li>
+                </ol>
             </div>
-            <div id="upload-error" class="upload-error"></div>
+            <div id="upload-error" class="upload-error" role="alert"></div>
             <div id="player-section">
                 <div class="player-row">
                     <div class="waveform-wrap" id="waveform-wrap">
@@ -48,77 +51,96 @@
                         </div>
                     </div>
                     <div class="zoom-row">
-                        <span class="zoom-label">zoom</span>
+                        <label class="zoom-label" for="zoom-slider">Zoom</label>
                         <input type="range" id="zoom-slider" min="1" max="8" step="0.1" value="1" />
                         <span id="zoom-value">1.0x</span>
                     </div>
                     <div class="player-bar-row player-controls">
-                        <button class="player-btn" id="restart-btn" title="Play from the beginning">[ |&lt; ]</button>
-                        <button class="player-btn" id="play-btn">[ Play ]</button>
-                        <button class="player-btn" id="btn-add-segment" title="Split at current position (Enter)">[ Split ]</button>
+                        <button class="player-btn" id="restart-btn" title="Play from the beginning (left arrow)">
+                            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="2.5" height="14" /><path d="M19 5v14L9 12z" /></svg>
+                            <span>Restart</span>
+                        </button>
+                        <button class="player-btn primary" id="play-btn" title="Play or pause (space)">
+                            <svg class="icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l11 7-11 7z" /></svg>
+                            <svg class="icon icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
+                            <span id="play-label">Play</span>
+                        </button>
+                        <button class="player-btn" id="btn-add-segment" title="Split at the playhead (enter)">
+                            <svg class="icon icon-line" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M7 8l-3 4 3 4M17 8l3 4-3 4" /></svg>
+                            <span>Split</span>
+                        </button>
                     </div>
                 </div>
-                <button class="btn info-toggle" id="shortcuts-toggle" type="button">[ Learn more about audio preview ]</button>
-                <div id="shortcuts-panel" class="info-panel">
-                    <div># use `left arrow` to restart</div>
-                    <div># use `space` to play/pause</div>
-                    <div># use `enter` to split</div>
-                    <div># no sound on your phone? toggle the silent switch on/off</div>
-                </div>
+                <details class="help">
+                    <summary>Shortcuts and tips</summary>
+                    <ul>
+                        <li><kbd>Space</kbd> play or pause</li>
+                        <li><kbd>Left arrow</kbd> play from the beginning</li>
+                        <li><kbd>Enter</kbd> split at the playhead</li>
+                        <li>Drag a line in the strip above the waveform to move a split</li>
+                        <li>No sound on your phone? Turn the silent switch off and on again</li>
+                    </ul>
+                </details>
             </div>
-        </div>
+        </section>
 
         <!-- Segments -->
-        <div id="sections-block">
-            <div class="divider"></div>
-            <div class="section">
-                <div class="section-title">Sections</div>
-                <div id="segments-container"></div>
-                <div id="seg-notification" class="seg-notification"></div>
-                <button class="btn info-toggle" id="crossfade-toggle" type="button">[ Learn more about sections ]</button>
-                <div id="crossfade-panel" class="info-panel">
-                    <div># to make transitions smooth, crossfade is applied automatically</div>
-                </div>
-            </div>
-        </div>
+        <section id="sections-block" class="section">
+            <div class="section-title">Sections</div>
+            <div id="segments-container"></div>
+            <div id="seg-notification" class="seg-notification" role="status" aria-live="polite"></div>
+            <details class="help">
+                <summary>About sections</summary>
+                <ul>
+                    <li>Each split gets a short crossfade automatically, so transitions sound smooth</li>
+                    <li>The seam setting between two sections controls how the volume changes across the split</li>
+                    <li>Skipped sections are cut from the export</li>
+                </ul>
+            </details>
+        </section>
 
         <!-- Output -->
-        <div id="output-block">
-            <div class="divider"></div>
-            <div class="section">
-                <div class="section-title">Output</div>
+        <section id="output-block" class="section">
+            <div class="section-title">Output</div>
 
-                <div class="output-row">
-                    <span class="output-label">Estimated duration:</span>
-                    <span id="predicted-duration-text">--:--</span>
-                </div>
+            <div class="output-row">
+                <span class="output-label">Estimated duration</span>
+                <span id="predicted-duration-text">--:--</span>
+            </div>
 
-                <div class="export-row">
-                    <button class="btn btn-export" id="export-btn">[ Export ]</button>
-                    <label class="export-report-opt">
-                        <input type="checkbox" id="export-report-check" />
-                        also download a report
-                    </label>
-                </div>
+            <div class="export-row">
+                <button class="btn btn-export" id="export-btn">
+                    <svg class="icon icon-line" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>
+                    <span>Export MP3</span>
+                </button>
+                <label class="export-report-opt">
+                    <input type="checkbox" id="export-report-check" />
+                    also download a report
+                </label>
+            </div>
 
-                <div id="status-banner">
-                    <pre id="pet-frame"></pre>
+            <div id="status-banner" role="status" aria-live="polite">
+                <div class="status-main">
+                    <span id="pet-frame" class="spinner" hidden></span>
                     <span id="status-text"></span>
-                    <div id="progress-line"></div>
+                </div>
+                <div id="progress-line">
+                    <progress id="progress-bar" max="1" value="0" hidden></progress>
+                    <span id="progress-text"></span>
                 </div>
             </div>
-        </div>
+        </section>
 
     </div>
 
     <!-- Returning-user choice (blocking) -->
     <div id="resume-modal" class="modal-overlay">
-        <div class="modal-card">
-            <div class="modal-title">Welcome back</div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="resume-modal-title">
+            <div class="modal-title" id="resume-modal-title">Welcome back</div>
             <div class="modal-text" id="resume-modal-text"></div>
             <div class="modal-actions">
-                <button class="btn" id="resume-continue-btn">[ Continue where you left off ]</button>
-                <button class="btn" id="resume-newedit-btn">[ Start new edit ]</button>
+                <button class="btn primary" id="resume-continue-btn">Continue where you left off</button>
+                <button class="btn" id="resume-newedit-btn">Start a new edit</button>
             </div>
         </div>
     </div>

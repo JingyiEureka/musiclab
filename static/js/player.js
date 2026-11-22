@@ -143,7 +143,7 @@ export async function play() {
     if (!needsRender(state.segments)) {
         if (TIMING) showNotification('no render: volume-only edit, playing the source', true);
     } else {
-        document.getElementById('play-btn').textContent = '[ Rendering... ]';
+        document.getElementById('play-label').textContent = 'Rendering...';
         const startedAt = performance.now();
         try {
             const t = await getTimeline();
@@ -223,7 +223,8 @@ export function playFromStart() {
 }
 
 export function updatePlayUI() {
-    document.getElementById('play-btn').textContent = state.isPlaying ? '[ Pause ]' : '[ Play ]';
+    document.getElementById('play-btn').classList.toggle('is-playing', state.isPlaying);
+    document.getElementById('play-label').textContent = state.isPlaying ? 'Pause' : 'Play';
 }
 
 function animate() {

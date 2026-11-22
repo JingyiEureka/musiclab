@@ -80,3 +80,7 @@ LAME's licence asks for acknowledgement and a link, so the credit above is a
 condition of use rather than a courtesy. Neither library's licence reaches
 MusicLab's own code; see the amendment to
 [ADR 0006](docs/adr/0006-lamejs-instead-of-ffmpeg-wasm.md) for the reasoning.
+
+The interface uses **[IBM Plex Sans and IBM Plex Mono](https://github.com/IBM/plex)**,
+vendored in `static/vendor/fonts/` under the SIL Open Font License 1.1, with the
+licence texts beside the font files.

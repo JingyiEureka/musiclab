@@ -44,14 +44,23 @@ The client path requires a secure context: `audioWorklet` is absent over plain
 http on a non-localhost origin. GitHub Pages serves https; local
 development on `127.0.0.1` is secure by the localhost exemption.
 
-## 3. Offline script
+## 3. Interface
+
+Plain ES modules and one stylesheet; no UI library, no framework, no build step
+(ADR 0013). `static/styles.css` starts with a `:root` token block that holds the
+whole palette, including the waveform bar colours that `waveform.js` reads with
+`getComputedStyle`. The IBM Plex fonts are vendored in `static/vendor/fonts/`.
+Up to 600 px wide, each section row is laid out as a card by CSS alone; the
+markup from `renderSegments()` is the same at every width.
+
+## 4. Offline script
 
 `app/speed_changer.py` applies cuts, speeds and volumes to a file with librosa
 and ffmpeg, configured in its `__main__` block. It is not part of the site
 and has its own dependencies in `requirements-cli.txt`. It is a fallback and a reference implementation, not
 kept in step with the browser engine (ADR 0011).
 
-## 4. Known issues and trade-offs
+## 5. Known issues and trade-offs
 
 1. **Video files only load where the browser decodes them.** Chrome and
    Android read the audio track of an mp4; iPhone Safari does not, and the

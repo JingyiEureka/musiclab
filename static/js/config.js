@@ -1,8 +1,6 @@
 // Tunables and fixed strings shared across modules.
 export const CONFIG = {
     MAX_UPLOAD_BYTES: 50 * 1024 * 1024,
-    WAVEFORM_COLOR_PLAYED: '#d4a0b5',
-    WAVEFORM_COLOR_UNPLAYED: '#666666',
     WAVEFORM_PX_PER_SEC: 13,
 };
 
