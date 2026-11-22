@@ -2,8 +2,8 @@
 
 Last updated 2026-11-22. The browser refactor is merged to `main` (PR #1) and
 **deployed to production** on 2026-11-09. On 2026-11-15 the server was removed
-from the code in favour of GitHub Pages (ADR 0012); since 2026-11-22 the live domain is served by Pages,
-see section 2b (only the server shutdown remains).
+from the code in favour of GitHub Pages (ADR 0012); since 2026-11-22 the live
+domain is served by Pages and the old server is shut down (section 2b).
 
 ## 1. Where things stand
 
@@ -44,21 +44,21 @@ Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
 - **Product direction:** decided 2026-11-08 to ship and gather feedback from
   the dancers before planning new features.
 
-## 2a. Production (old server, being retired)
+## 2a. Old production server (retired 2026-11-22)
 
-Deployed 2026-11-09 from `main` (`51524f0`). Verified on
-the live site: new modules served, `/upload-audio/` 404, `/extract-audio/`
-answers, and a full render and export in headless Chrome.
+The Docker deployment on xkec2 that served the site from 2026-11-09 to
+2026-11-22 is gone: container, both `kakakakakaka/music_lab` images (including
+`rollback-20261108`), `/home/ubuntu/jingyi`, the nginx server blocks, the
+password file and the Let's Encrypt certificate. What is kept on xkec2:
 
-- The pre-browser image is kept on the server as
-  `kakakakakaka/music_lab:rollback-20261108`. To roll back:
-  `docker tag kakakakakaka/music_lab:rollback-20261108 kakakakakaka/music_lab:latest`
-  then `docker compose up -d` in `/home/ubuntu/jingyi`. Remove the tag once the
-  new version has run without complaints for a while.
-- A browser tab holding the old page will fail to export until reloaded.
-- The folder still holds July copies of the old code and an empty root-owned
-  `outputs/`. Not tidied separately: it is archived and deleted as a whole in
-  2b step 4.
+- `~/jingyi-pre-browser-20261109.tgz`: the whole folder plus
+  `musiclab.htpasswd`.
+- `/etc/nginx/sites-available/default.bak-20261122-musiclab`: the nginx config
+  before the blocks were removed.
+
+The images are still on Docker Hub. Rollback is no longer a one-liner: restore
+the folder and the nginx blocks, `docker compose up -d`, re-issue the
+certificate with certbot, and point DNS back at `54.153.163.10`.
 
 ## 2b. Cutover to GitHub Pages
 
@@ -80,11 +80,9 @@ answers, and a full render and export in headless Chrome.
       (`auth_basic "MusicLab"`, `/etc/nginx/musiclab.htpasswd`, added around
       2026-11-09); Pages cannot do auth. The user chose on 2026-11-15 to drop
       it. If a gate is wanted later: Cloudflare Pages plus Cloudflare Access.
-- [ ] 4. After a quiet period, and only on the user's go-ahead: on xkec2,
-      archive `/home/ubuntu/jingyi` to `~/jingyi-pre-browser-20261109.tgz`,
-      `docker compose down`, delete the folder (`outputs/` needs sudo), remove
-      both `kakakakakaka/music_lab` images, the nginx server blocks for
-      `musiclab.jyylab.cc` and `/etc/nginx/musiclab.htpasswd`.
+- [x] 4. Old server shut down on the user's go-ahead (2026-11-22); see 2a.
+      The other sites on xkec2 (ys, file, pass, loc) still answer as before;
+      `nginx -t` passed before the reload.
 
 ## 3. Vendored libraries
 
