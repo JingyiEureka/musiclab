@@ -3,7 +3,7 @@
 Last updated 2026-11-22. The browser refactor is merged to `main` (PR #1) and
 **deployed to production** on 2026-11-09. On 2026-11-15 the server was removed
 from the code in favour of GitHub Pages (ADR 0012); since 2026-11-22 the live domain is served by Pages,
-see section 2b (iPhone test and server shutdown remain).
+see section 2b (only the server shutdown remains).
 
 ## 1. Where things stand
 
@@ -67,15 +67,15 @@ answers, and a full render and export in headless Chrome.
   since a push to `main` is now a deploy.
 - [x] 2. Repo public, Pages source "GitHub Actions", PR #2 merged. On
       github.io: all files 200, 4 browser suites green, a real-UI export at 95%
-      (90.13 s to 94.90 s), mp4 loads in Chrome. iPhone not yet tried.
+      (90.13 s to 94.90 s), mp4 loads in Chrome.
 - [x] 3. Custom domain `musiclab.jyylab.cc` set in Pages, and the Cloudflare
       record changed to `CNAME jingyieureka.github.io`, DNS only (2026-11-15).
       The certificate stayed null for a week; removing and re-adding the
       custom domain in Settings > Pages got it issued within minutes
       (2026-11-22). "Enforce HTTPS" is on. On the live domain: secure
       context, 4 browser suites green, a real-UI export at 95% (105.56 s to
-      111.10 s). Remaining: the iPhone test; the http-to-https redirect was
-      not yet active right after enabling it.
+      111.10 s). http redirects to https (301). The user tested on their iPhone
+      on 2026-11-22: passes.
       **This drops the password.** The old site sits behind nginx basic auth
       (`auth_basic "MusicLab"`, `/etc/nginx/musiclab.htpasswd`, added around
       2026-11-09); Pages cannot do auth. The user chose on 2026-11-15 to drop
