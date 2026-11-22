@@ -1,6 +1,6 @@
 # Handoff
 
-Last updated 2026-11-22 (UI redesign in progress on `ui-refresh`). The browser refactor is merged to `main` (PR #1) and
+Last updated 2026-11-23 (UI redesign merged and live, PR #3). The browser refactor is merged to `main` (PR #1) and
 **deployed to production** on 2026-11-09. On 2026-11-15 the server was removed
 from the code in favour of GitHub Pages (ADR 0012); since 2026-11-22 the live
 domain is served by Pages and the old server is shut down (section 2b).
@@ -23,12 +23,15 @@ Verification: **37 browser tests** (5 single-rate, 11 timeline, 14 data model,
 
 ## 2. Open items
 
-- [ ] **UI redesign (branch `ui-refresh`, 2026-11-22).** Studio look in our own
+- [ ] **UI redesign, merged 2026-11-23 (PR #3) and live.** Studio look in our own
       CSS, no library or framework (ADR 0013). Verified in headless Chromium at
       320 / 375 / 390 / 601 / 640 / 768 / 1280 px: no sideways page scroll,
       split / stepper / merge / drag / skip / play / export with report /
-      resume all work, 37 browser tests and pytest green. **Not yet checked on
-      a real iPhone** (Safari is the only engine not covered). Merging deploys.
+      resume all work, 37 browser tests and pytest green. Before merge the
+      user asked to drop the "About sections" panel and to calm the colours
+      (sections dusty rose / slate blue, numbers off-white). Live check after
+      deploy: 4 browser suites green, real-UI export works. **Not yet checked
+      on a real iPhone** (Safari is the only engine not covered).
 - [ ] **Try Peaks.js for the waveform** only if dragging still feels clumsy
       after the redesign (deferred by the user on 2026-11-22).
 
